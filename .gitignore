@@ -18,6 +18,7 @@ Saved/
 
 # Plugins built files
 Plugins/*/Binaries/
+!Plugins/VARCO3DPlugin/Binaries/
 Plugins/*/Intermediate/
 
 # User config
