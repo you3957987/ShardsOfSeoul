@@ -1,0 +1,32 @@
+# VS/IDE
+.vs/
+.idea/
+.vscode/
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# UE temp/built folders
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Plugins built files
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# User config
+Config/User*.ini
+
+# Packaged
+Builds/
+
+# Temp/Backup
+*.bak
+*.tmp
+*.log
