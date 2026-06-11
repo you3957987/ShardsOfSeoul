@@ -153,9 +153,12 @@ void ABaseEnemyProjectile::OnOverlapBegin(UPrimitiveComponent* OverlappedCompone
 					
 					ABaseRangedEnemy* RangedCharacter = Cast<ABaseRangedEnemy>(GetOwner());
 					
-					UEnemyLogManager::EnemyLog( RangedCharacter->GetEnemyType() == EEnemyType::EET_Ranged ? EEnemyLogType::Ranged : EEnemyLogType::Revive,
-						FString::Printf(TEXT("적 [%s] 발사체가 [%.f] 대미지 줌"),
-						*OwnerMeshName, Damage));
+					if ( RangedCharacter )
+					{
+						UEnemyLogManager::EnemyLog( RangedCharacter->GetEnemyType() == EEnemyType::EET_Ranged ? EEnemyLogType::Ranged : EEnemyLogType::Revive,
+							FString::Printf(TEXT("적 [%s] 발사체가 [%.f] 대미지 줌"),
+							*OwnerMeshName, Damage));
+					}
 				}
 			}
 		}

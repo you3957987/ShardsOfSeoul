@@ -7,7 +7,6 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/ProgressBar.h"
 #include "Components/sphereComponent.h"
-#include "EnemyBoss/SkeletonMage/BossSkeletonMage.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
