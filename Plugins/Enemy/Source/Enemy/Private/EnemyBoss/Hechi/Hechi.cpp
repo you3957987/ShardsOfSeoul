@@ -4,11 +4,18 @@
 #include "NiagaraFunctionLibrary.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "EnemyProjectile/BaseEnemyProjectile.h"
+#include "Engine/OverlapResult.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 AHechi::AHechi()
 {
 	LaserSpawnPoint = CreateDefaultSubobject<USceneComponent>(TEXT("LaserSpawnPoint"));
 	LaserSpawnPoint->SetupAttachment(RootComponent);
+	
+	RightHandPoint = CreateDefaultSubobject<USceneComponent>(TEXT("RightHandPoint"));
+	RightHandPoint->SetupAttachment(GetMesh(), TEXT("RightHandSocket")); // 메시의 오른손 소켓에 부착
+	
 }
 
 void AHechi::BeginPlay()
@@ -22,6 +29,8 @@ void AHechi::BeginPlay()
 void AHechi::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	
+	HandleGravityAttack(DeltaTime);
 }
 
 float AHechi::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator,
@@ -43,8 +52,6 @@ UAnimMontage* AHechi::StartLaserAttack()
 	if ( LaserAttackMontage )
 	{
 		PlayAnimMontage(LaserAttackMontage);
-		
-		bFocusPlayerAfterAttack = false;
 		
 		if ( BlackboardComp )
 		{
@@ -147,6 +154,206 @@ void AHechi::StopShootLaserProjectole()
 	// ★ 타이머를 클리어하면 즉시 연사가 멈춥니다.
 	GetWorldTimerManager().ClearTimer(ProjectileTimerHandle);
 }
+
+UAnimMontage* AHechi::PlayGravityAttack()
+{
+	if ( GravityAttackMontage )
+	{
+		PlayAnimMontage(GravityAttackMontage);
+		
+		if ( BlackboardComp )
+		{
+			BlackboardComp->SetValueAsFloat("AttackDelay", AttackStruct.GravityAttackDelay); // 행동 딜레이 설정
+		}
+		
+		return GravityAttackMontage;
+	}
+	return nullptr;
+}
+
+
+void AHechi::StartGravityAttack()
+{
+	if (!TargetCharacter || !GravityGroundEffect) return;
+
+	UCharacterMovementComponent* MoveComp = TargetCharacter->GetCharacterMovement();
+	if (MoveComp)
+	{
+		DefaultGravityScale = MoveComp->GravityScale;
+		DefaultAirControl = MoveComp->AirControl;
+		DefaultMaxWalkSpeed = MoveComp->MaxWalkSpeed;
+	}
+	
+	// 바닥 위치 계산 로직 (기존과 동일)
+	const FVector CharacterLocation = TargetCharacter->GetActorLocation();
+	FVector SpawnLocation = CharacterLocation;
+	FHitResult HitResult;
+	FCollisionQueryParams TraceParams;
+	if ( TargetCharacter )TraceParams.AddIgnoredActor(TargetCharacter);
+	TraceParams.AddIgnoredActor(this);
+
+	TArray<AActor*> PetActors;
+	TArray<AActor*> EnemyActors;
+
+	UGameplayStatics::GetAllActorsWithTag(GetWorld(), FName("Pet"), PetActors);
+	UGameplayStatics::GetAllActorsWithTag(GetWorld(), FName("Enemy"), EnemyActors);
+
+	// TraceParams에 각각 추가
+	TraceParams.AddIgnoredActors(PetActors);
+	TraceParams.AddIgnoredActors(EnemyActors);
+	
+	if (GetWorld()->LineTraceSingleByChannel(HitResult, CharacterLocation, CharacterLocation - FVector(0.f, 0.f, 1000.f), ECC_WorldStatic, TraceParams))
+	{
+		SpawnLocation = HitResult.Location;
+	}
+
+	// 상태값 설정
+	GravityAttackCenter = SpawnLocation + FVector(0.f, 0.f, GravityHalfHeight - 200.f);
+	GravityTimer = 0.0f; // 타이머 초기화
+
+	// 이펙트 스폰
+	UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), GravityGroundEffect, SpawnLocation + FVector(0.f, 0.f, 2.f), FRotator::ZeroRotator, FVector(1.f));
+
+	// 시전 시간 뒤에 실제 캡슐 판정 활성화
+	FTimerHandle GravityActivationTimer;
+	GetWorldTimerManager().SetTimer(GravityActivationTimer, [this]()
+	{
+		bIsGravityAttackActive = true; 
+	}, 1.0f, false); // 1.0초 지연 (원하는 시간으로 조절 가능)
+	
+	FTimerHandle ImpactEffectTimer;
+	// 람다 캡처에 SpawnLocation을 추가하여 시작 시점의 바닥 위치를 기억하게 합니다.
+	GetWorldTimerManager().SetTimer(ImpactEffectTimer, [this, SpawnLocation]()
+	{
+		if (GravityImpactEffect)
+		{
+			// 시작 시 장판(GravityGroundEffect) 위치와 동일한 위치에서 Z축으로 -100만큼 조정
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), GravityImpactEffect,
+				SpawnLocation + FVector(0.f, 0.f, -100.f), 
+				FRotator::ZeroRotator, FVector(1.f));
+		}
+	}, 4.7f, false);
+	
+	// 일정 시간 뒤 종료 예약
+	FTimerHandle GravityEndTimer;
+	GetWorldTimerManager().SetTimer(GravityEndTimer, this, &AHechi::EndGravityAttack, GravityDuration, false);
+}
+
+void AHechi::EndGravityAttack()
+{
+	bIsGravityAttackActive = false;
+	
+	// 1. 범위 내의 모든 캐릭터를 찾기 위한 설정
+	TArray<FOverlapResult> OverlapResults;
+	FCollisionShape GravityCapsule = FCollisionShape::MakeCapsule(GravityRadius, GravityHalfHeight);
+	FCollisionQueryParams OverlapParams;
+	OverlapParams.AddIgnoredActor(this);
+
+	// 2. 공격 종료 시 캡슐 범위 내에 있는 캐릭터들 체크
+	if (GetWorld()->OverlapMultiByChannel(OverlapResults, GravityAttackCenter, FQuat::Identity, ECC_Pawn, GravityCapsule, OverlapParams))
+	{
+		for (auto& Result : OverlapResults)
+		{
+			ACharacter* OverlappedChar = Cast<ACharacter>(Result.GetActor());
+			if (OverlappedChar && OverlappedChar->ActorHasTag(TEXT("Player")))
+			{
+				UCharacterMovementComponent* MoveComp = OverlappedChar->GetCharacterMovement();
+				if (MoveComp)
+				{
+					// 1. 원래 상태로 복구
+					MoveComp->GravityScale = DefaultGravityScale;
+					MoveComp->AirControl = DefaultAirControl;
+					MoveComp->MaxWalkSpeed = DefaultMaxWalkSpeed;
+
+					// 2. 바닥으로 빠르게 발사 (Z축 하향 속도 부여)
+					// -1500.f 정도면 매우 빠르게 바닥으로 내리꽂힙니다.
+					FVector SlamVelocity = FVector(0.f, 0.f, -4000.f); 
+					OverlappedChar->LaunchCharacter(SlamVelocity, false, true);
+                
+					// 대미지 주기
+					UGameplayStatics::ApplyDamage(OverlappedChar, 
+						AttackStruct.GravityAttackDamage, GetController(), this, UDamageType::StaticClass());
+					
+					CommonBossLogData.TotalDamageDealt += AttackStruct.GravityAttackDamage;
+					//BossSkeletonMageLogData.GravityAttackDamage += AttackStruct.GravityAttackDamage;
+					
+					UEnemyLogManager::EnemyLog(EEnemyLogType::SkeletonMage, 
+						FString::Printf(TEXT("[스켈레톤 메이지] 중력 공격으로 플레이어에게 %.2f 대미지"), AttackStruct.GravityAttackDamage));
+					
+					//BossSkeletonMageLogData.GravityAttackDamage += AttackStruct.GravityAttackDamage;
+				}
+			}
+		}
+	}
+	
+	// 3. (혹시 범위 밖에 나갔더라도) 타겟팅된 메인 플레이어는 확실하게 복구
+	if (TargetCharacter)
+	{
+		UCharacterMovementComponent* MoveComp = TargetCharacter->GetCharacterMovement();
+		if (MoveComp && MoveComp->GravityScale < 1.0f)
+		{
+			MoveComp->GravityScale = DefaultGravityScale;
+			MoveComp->AirControl = DefaultAirControl;
+			MoveComp->MaxWalkSpeed = DefaultMaxWalkSpeed;
+		}
+	}
+}
+
+void AHechi::HandleGravityAttack(float DeltaTime)
+{
+	if (bIsGravityAttackActive)
+	{
+		// 디버그 캡슐 그리기는 매 프레임 실행 (시각화 유지용)
+		//DrawDebugCapsule(GetWorld(), GravityAttackCenter, GravityHalfHeight, GravityRadius, 
+		//FQuat::Identity, FColor::Purple, false, DeltaTime * 2.f, 0, 1.0f);
+
+		// 범위 체크
+		TArray<FOverlapResult> OverlapResults;
+		FCollisionShape GravityCapsule = FCollisionShape::MakeCapsule(GravityRadius, GravityHalfHeight);
+		FCollisionQueryParams OverlapParams;
+		OverlapParams.AddIgnoredActor(this);
+
+		bool bIsPlayerInArea = false;
+		if (GetWorld()->OverlapMultiByChannel(OverlapResults, GravityAttackCenter, FQuat::Identity, ECC_Pawn, GravityCapsule, OverlapParams))
+		{
+			for (auto& Result : OverlapResults)
+			{
+				ACharacter* OverlappedChar = Cast<ACharacter>(Result.GetActor());
+				if (OverlappedChar && OverlappedChar->ActorHasTag(TEXT("Player")))
+				{
+					bIsPlayerInArea = true;
+					UCharacterMovementComponent* MoveComp = OverlappedChar->GetCharacterMovement();
+					if (MoveComp)
+					{
+						// 영역 안에 있는 동안 지속적으로 무중력 적용
+						MoveComp->GravityScale = 0.05f; 
+						MoveComp->AirControl = 0.7f;  // 공중 제어력 증가
+						MoveComp->MaxWalkSpeed = 200.f; // 좀 느리게
+						
+						// Z축으로 살짝 뜨게 하는 힘 (둥둥 뜨는 느낌)
+						if (OverlappedChar->GetVelocity().Z < 100.f)
+						{
+							MoveComp->AddImpulse(FVector(0.f, 0.f, 20.f), true);
+						}
+					}
+				}
+			}
+		}
+
+		// 만약 플레이어가 영역 밖으로 나갔다면 중력 원복
+		if (!bIsPlayerInArea && TargetCharacter)
+		{
+			UCharacterMovementComponent* MoveComp = TargetCharacter->GetCharacterMovement();
+			if (MoveComp && MoveComp->GravityScale < 1.0f)
+			{
+				MoveComp->GravityScale = DefaultGravityScale;
+				MoveComp->AirControl = DefaultAirControl;
+				MoveComp->MaxWalkSpeed = DefaultMaxWalkSpeed;
+			}
+		}
+	}
+}
+
 
 #if WITH_EDITOR
 void AHechi::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)

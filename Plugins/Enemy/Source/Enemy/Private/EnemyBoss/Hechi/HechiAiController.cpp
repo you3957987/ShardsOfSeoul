@@ -21,6 +21,7 @@ void AHechiAiController::SetBlackboardKey()
 	BlackboardComp->SetValueAsObject(TEXT("TargetCharacter"), TargetPawn);
 	
 	BlackboardComp->SetValueAsFloat("W_LaserAttack", ControlledEnemy->AttackStruct.LaserAttackWeight);
+	BlackboardComp->SetValueAsFloat("W_GravityAttack", ControlledEnemy->AttackStruct.GravityAttackWeight);
 	
 	BlackboardComp->SetValueAsBool("SecondPhase", false);
 }
