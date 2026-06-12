@@ -18,7 +18,12 @@ public class ShardsOfSeoul : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"GeometryScriptingCore",
+			"GeometryFramework",
+			"DynamicMesh",
+			"GeometryCore",
+			"Landscape"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

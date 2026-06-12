@@ -30,3 +30,6 @@ Builds/
 *.bak
 *.tmp
 *.log
+
+# Raw GIS Data (National Spatial Information Security)
+GIS_Raw/
