@@ -450,6 +450,47 @@ void AHechi::SpawnBlackhole()
 	}
 }
 
+UAnimMontage* AHechi::PlayThrowMagicBallMontage()
+{
+	if ( ThrowMagicBallMontage )
+	{
+		PlayAnimMontage(ThrowMagicBallMontage);
+		
+		if ( BlackboardComp )
+		{
+			BlackboardComp->SetValueAsFloat("AttackDelay", AttackStruct.ThrowMagicBallDelay); // 행동 딜레이 설정
+		}
+		
+		return ThrowMagicBallMontage;
+	}
+	return nullptr;
+}
+
+void AHechi::ShootMagickBall()
+{
+	// 필요한 모든 컴포넌트와 변수가 유효한지 확인합니다.
+	if (!IsValid(TargetCharacter) || !IsValid(RightHandPoint) || MagicBallProjectileClass == nullptr)
+	{
+		return;
+	}
+
+	// RightHandPoint의 월드 위치와 회전값을 가져옵니다.
+	const FVector SpawnLocation = RightHandPoint->GetComponentLocation();
+
+	// 발사 위치에서 타겟을 향하는 방향을 계산합니다.
+	const FVector TargetLocation = TargetCharacter->GetActorLocation();
+	const FRotator SpawnRotation = UKismetMathLibrary::FindLookAtRotation(SpawnLocation, TargetLocation);
+
+	// 스폰 파라미터를 설정합니다.
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.Instigator = GetInstigator();
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	// 월드에 발사체를 스폰합니다.
+	GetWorld()->SpawnActor<ABaseEnemyProjectile>(MagicBallProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
+}
+
 #if WITH_EDITOR
 void AHechi::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {

@@ -9,24 +9,26 @@ struct FBossHechiManAttackStruct
 {
 	GENERATED_BODY()
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float LaserAttackWeight = 0.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float GravityAttackWeight = 0.0f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float TeleportWeight = 0.0f;
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float ThrowMagicBallWeight = 0.0f;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float LaserAttackDamage = 10.f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float LaserAttackDelay = 1.5f;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float GravityAttackDamage = 15.f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float GravityAttackDelay = 1.5f;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float TeleportDelay = 4.0f;
 	// 텔레포트 최대 거리
 	UPROPERTY(EditAnywhere, Category = "자체설정")
@@ -34,6 +36,9 @@ struct FBossHechiManAttackStruct
 	// 텔레포트 최소 거리
 	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float MinTeleportDist = 500.f;
+	
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float ThrowMagicBallDelay = 3.0f;
 };
 
 UCLASS()
@@ -148,6 +153,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
 	TSubclassOf<class ABlackholeProjectile> BlackholeProjectileClass;
 	
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	UAnimMontage* ThrowMagicBallMontage;
+	UAnimMontage* PlayThrowMagicBallMontage();
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	TSubclassOf<class ABaseEnemyProjectile> MagicBallProjectileClass;
+	UFUNCTION(BlueprintCallable)
+	void ShootMagickBall();
 	
 #if WITH_EDITOR
 	// 에디터에서 프로퍼티가 변경될 때 호출됩니다.
