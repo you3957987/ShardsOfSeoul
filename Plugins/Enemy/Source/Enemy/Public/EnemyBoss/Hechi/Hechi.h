@@ -13,18 +13,28 @@ struct FBossHechiManAttackStruct
 	float LaserAttackWeight = 0.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	float GravityAttackWeight = 0.0f;
-	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	float TeleportWeight = 0.0f;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	float LaserAttackDamage = 10.f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	float LaserAttackDelay = 1.5f;
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	float GravityAttackDamage = 15.f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	float GravityAttackDelay = 1.5f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	float TeleportDelay = 4.0f;
+	// 텔레포트 최대 거리
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float MaxTeleportDist = 800.f;
+	// 텔레포트 최소 거리
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float MinTeleportDist = 500.f;
 };
-
 
 UCLASS()
 class ENEMY_API AHechi : public ABaseBossEnemy
@@ -107,6 +117,36 @@ public:
 	float GravityHalfHeight = 700.f;
 	float GravityDuration = 4.8f;
 	float GravityTimer = 0.0f;
+	
+	// 블루프린트 HandleTeleport에서 사용할 변수
+	UPROPERTY(BlueprintReadWrite, Category = "자체설정")
+	bool HandleTeleportFlag = false;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	UAnimMontage* TeleportMontage;
+	// 텔레포트 시작 함수
+	UAnimMontage* PlayTeleportMontage(const FVector& Destination);
+	// 텔레포트 목적지 위치 저장용 변수
+	FVector TeleportDestination;
+	// 애님 노티파이에서 호출할 함수
+	UFUNCTION( BlueprintCallable )
+	void TeleportMoveToNextPoint();
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	class UParticleSystem* TeleportOutEffect;
+	UFUNCTION(BlueprintCallable)
+	void StartDisappear();
+	void EndDisappear();
+	// 타이머를 관리할 핸들 변수
+	FTimerHandle TeleportTimerHandle;
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float DisappearDuration = 3.0f; 
+	UFUNCTION( BlueprintCallable )
+	void SetMeshHidden();
+	UFUNCTION( BlueprintCallable )
+	void SetMeshVissible();
+	UFUNCTION( BlueprintCallable )
+	void SpawnBlackhole();
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	TSubclassOf<class ABlackholeProjectile> BlackholeProjectileClass;
 	
 	
 #if WITH_EDITOR

@@ -3,10 +3,13 @@
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "EnemyProjectile/BaseEnemyProjectile.h"
+#include "EnemyProjectile/BlackholeProjectile.h"
 #include "Engine/OverlapResult.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 
 AHechi::AHechi()
 {
@@ -170,7 +173,6 @@ UAnimMontage* AHechi::PlayGravityAttack()
 	}
 	return nullptr;
 }
-
 
 void AHechi::StartGravityAttack()
 {
@@ -354,6 +356,99 @@ void AHechi::HandleGravityAttack(float DeltaTime)
 	}
 }
 
+UAnimMontage* AHechi::PlayTeleportMontage(const FVector& Destination)
+{	
+	if ( TeleportMontage )
+	{
+		PlayAnimMontage(TeleportMontage);
+			
+		TeleportDestination = Destination;
+		
+		if ( BlackboardComp ) BlackboardComp->SetValueAsFloat("AttackDelay", AttackStruct.TeleportDelay); // 행동 딜레이 설정
+		
+		return TeleportMontage;
+	}
+	return nullptr;
+}
+
+void AHechi::TeleportMoveToNextPoint()
+{
+	if (TeleportDestination != FVector::ZeroVector)
+	{
+		//SpawnTeleportEffectAtLocation(GetActorLocation()); // 현재 위치에 이펙트 생성
+		
+		// --- 수정된 부분: 캡슐 절반 높이만큼 위로 오프셋을 주어 바닥 위에 정상적으로 서도록 함 ---
+		float SafeZOffset = GetCapsuleComponent() ? GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 0.f;
+		FVector AdjustedDestination = TeleportDestination + FVector(0.f, 0.f, SafeZOffset);
+		
+		SetActorLocation(AdjustedDestination); // 조정된 위치로 텔레포트 이동
+		
+		
+		// TargetCharacter를 찾아서 바라보도록 회전
+		if (TargetCharacter)
+		{
+			const FVector TargetLocation = TargetCharacter->GetActorLocation();
+			// 현재 위치에서 타겟 위치를 바라보는 회전값 계산
+			const FRotator LookAtRotation = UKismetMathLibrary::FindLookAtRotation(GetActorLocation(), TargetLocation);
+
+			// Z축(Yaw) 회전만 적용하여 수평으로 바라보게 함
+			SetActorRotation(FRotator(0.f, LookAtRotation.Yaw, 0.f));
+		}
+		
+	}
+}
+
+void AHechi::StartDisappear()
+{
+	// 1. 플래그를 true로 설정
+	HandleTeleportFlag = true;
+
+	// 만약 기존에 돌고 있던 타이머가 있다면 초기화 (안전장치)
+	GetWorldTimerManager().ClearTimer(TeleportTimerHandle);
+	
+	// 3. 타이머 세팅: Duration 초 후에 EndDisappear 함수를 '한 번만' 실행합니다.
+	GetWorldTimerManager().SetTimer(
+		TeleportTimerHandle, 
+		this, 
+		&AHechi::EndDisappear, 
+		DisappearDuration, 
+		false // 반복 여부 (false = 1회성)
+	);
+}
+
+void AHechi::EndDisappear()
+{
+	HandleTeleportFlag = false;
+}
+
+void AHechi::SetMeshHidden()
+{
+	GetMesh()->SetVisibility(false);
+}
+
+void AHechi::SetMeshVissible()
+{	
+	GetMesh()->SetVisibility(true);
+}
+
+void AHechi::SpawnBlackhole()
+{
+	if ( BlackholeProjectileClass )
+	{	
+		FVector SpawnLocation = GetActorLocation();
+		
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = this;
+		SpawnParams.Instigator = this;
+
+		GetWorld()->SpawnActor<ABlackholeProjectile>(
+			BlackholeProjectileClass, 
+			SpawnLocation, 
+			FRotator::ZeroRotator, 
+			SpawnParams
+		);
+	}
+}
 
 #if WITH_EDITOR
 void AHechi::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
