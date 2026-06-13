@@ -33,3 +33,8 @@ Builds/
 
 # Raw GIS Data (National Spatial Information Security)
 GIS_Raw/
+
+# Python
+*.py
+*.pyc
+__pycache__/
