@@ -25,5 +25,5 @@ void AHechiAiController::SetBlackboardKey()
 	BlackboardComp->SetValueAsFloat("W_Teleport", ControlledEnemy->AttackStruct.TeleportWeight);
 	BlackboardComp->SetValueAsFloat("W_ThrowMagicBall", ControlledEnemy->AttackStruct.ThrowMagicBallWeight);
 	
-	BlackboardComp->SetValueAsBool("SecondPhase", false);
+	BlackboardComp->SetValueAsBool("ChangeMapTo", false);
 }
