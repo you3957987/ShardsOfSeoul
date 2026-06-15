@@ -1,0 +1,115 @@
+#include "Enemy/BasePassiveEnemy.h"
+
+#include "EnemyLogManager.h"
+#include "BehaviorTree/BlackboardComponent.h"
+#include "Components/SphereComponent.h"
+#include "Kismet/GameplayStatics.h"
+
+
+ABasePassiveEnemy::ABasePassiveEnemy()
+{
+	MeleeAttackPoint = CreateDefaultSubobject<USceneComponent>(TEXT("AttackPoint"));
+	MeleeAttackPoint->SetupAttachment(RootComponent); // 루트 컴포넌트
+	
+	AttackRangePointSphere = CreateDefaultSubobject<USphereComponent>(TEXT("AttackRangePointSphere"));
+	AttackRangePointSphere->SetupAttachment(MeleeAttackPoint); // AttackPoint에 부착
+	AttackRangePointSphere->ShapeColor = FColor::Purple;
+	AttackRangePointSphere->SetVisibility(false);
+	AttackRangePointSphere->SetHiddenInGame(false); 
+
+
+	EnemyType = EEnemyType::EET_Passive; // 패시브 타입으로 설정
+}
+
+void ABasePassiveEnemy::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	CheckMeleeAttackHit(DeltaTime);
+	
+}
+
+float ABasePassiveEnemy::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent,
+	class AController* EventInstigator, AActor* DamageCauser)
+{
+	
+	if (bPassive == true)
+	{
+		bPassive = false; // 패시브 상태에서 공격을 받으면 공격 상태로 전환
+		
+		BlackboardComp->SetValueAsBool(TEXT("Passive"), false); // 블랙보드에 패시브 상태 업데이트
+	}  
+	
+	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+}
+
+void ABasePassiveEnemy::CheckMeleeAttackHit(float DeltaTime)
+{
+	if (bIsMeleeAttacking == true ) // 공격 중일 때
+	{
+		TArray<AActor*> OverlappingActors;
+		// AttackRangePointSphere와 겹치는 모든 액터를 가져옵니다.
+		AttackRangePointSphere->GetOverlappingActors(OverlappingActors);
+		
+		for (AActor* OverlappingActor : OverlappingActors)
+		{
+			// 액터가 유효하고 "Player" 태그를 가지고 있으며, 아직 공격한 목록에 없는지 확인합니다.
+			if (OverlappingActor && OverlappingActor->ActorHasTag(FName("Player")) && !HittedActors.Contains(OverlappingActor))
+			{
+				// 공격 로그를 출력합니다.
+				UE_LOG(LogTemp, Warning, TEXT("Attack Hit Detected on: %s"), *OverlappingActor->GetName());
+
+				// 로그 기록 로직
+				if (GetMesh()) 
+				{
+					// 스켈레탈 메쉬 에셋 이름 가져오기
+					FString MeshName = GetMesh()->GetSkeletalMeshAsset() ? GetMesh()->GetSkeletalMeshAsset()->GetName() : TEXT("NoMeshAsset");
+					
+					UEnemyLogManager::EnemyLog(EEnemyLogType::Passive, 
+						FString::Printf(TEXT("적 [%s]가 [%.f] 대미지"), 
+							*MeshName, 
+							MeleeAttackDamage));
+				}
+				
+				EnemyLogData.TotalDamageDealt += MeleeAttackDamage; // 로그 데이터에 입힌 대미지 누적
+				
+				// 플레이어에게 대미지를 적용합니다.
+				UGameplayStatics::ApplyDamage(
+					OverlappingActor,
+					MeleeAttackDamage, // 헤더 파일에 선언된 대미지 변수
+					GetController(),
+					this,
+					UDamageType::StaticClass()
+				);
+				
+				// 공격한 목록에 추가하여 중복 피해를 방지합니다.
+				HittedActors.Add(OverlappingActor);
+
+				bIsMeleeAttacking = false; // 공격 상태를 종료합니다.
+			}
+		}
+	}
+}
+
+#if WITH_EDITOR
+void ABasePassiveEnemy::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// 변경된 프로퍼티의 이름을 가져옵니다.
+	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+	
+	// 디버그 모드에 따라 어택, 디텍트, 체이스 범위 구체의 가시성을 설정합니다.
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(ABasePassiveEnemy, bDebugMode))
+	{
+		if ( bDebugMode == true )
+		{
+			if ( AttackRangePointSphere ) AttackRangePointSphere->SetVisibility(true);
+		}
+		else
+		{
+			if ( AttackRangePointSphere ) AttackRangePointSphere->SetVisibility(false);
+		}
+	}
+}
+#endif
