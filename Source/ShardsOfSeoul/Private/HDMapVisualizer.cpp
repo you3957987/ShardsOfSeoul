@@ -118,6 +118,7 @@ void AHDMapVisualizer::ImportHDMapData()
 	TableToJSONMap.Add(DT_A2_Link, TEXT("HDMap_A2.json"));
 	TableToJSONMap.Add(DT_A3_Driveway, TEXT("HDMap_A3.json"));
 	TableToJSONMap.Add(DT_A4_Subsidiary, TEXT("HDMap_A4.json"));
+	TableToJSONMap.Add(DT_Sidewalk, TEXT("HDMap_Sidewalk.json"));
 	TableToJSONMap.Add(DT_B2_Lane, TEXT("HDMap_B2.json"));
 	TableToJSONMap.Add(DT_B3_Mark, TEXT("HDMap_B3.json"));
 	TableToJSONMap.Add(DT_C1_Light, TEXT("HDMap_C1.json"));
@@ -280,6 +281,9 @@ void AHDMapVisualizer::VisualizeHDMap()
 	// 4. DT_A4_Subsidiary (보도) ➡️ 노랑
 	DrawLayerHelper(DT_A4_Subsidiary, FallbackLinkMesh, FallbackLaneMesh, FallbackSphereMesh, YellowMat, (FHDMapA4SubsidiaryRow*)nullptr);
 
+	// 4-2. DT_Sidewalk (인도 병합) ➡️ 노랑
+	DrawLayerHelper(DT_Sidewalk, FallbackLinkMesh, FallbackLaneMesh, FallbackSphereMesh, YellowMat, (FHDMapSidewalkRow*)nullptr);
+
 	// 5. DT_B3_Mark (노면 기호) ➡️ 파랑
 	DrawLayerHelper(DT_B3_Mark, FallbackLinkMesh, FallbackLaneMesh, FallbackSphereMesh, BlueMat, (FHDMapB3MarkRow*)nullptr);
 
@@ -359,6 +363,7 @@ bool AHDMapVisualizer::GetPointsByLineID(const FString& LineID, TArray<FVector>&
 	TargetTables.Add(DT_B2_Lane);
 	TargetTables.Add(DT_C3_Protection);
 	TargetTables.Add(DT_A4_Subsidiary);
+	TargetTables.Add(DT_Sidewalk);
 	TargetTables.Add(DT_B3_Mark);
 	TargetTables.Add(DT_C4_SpeedBump);
 	TargetTables.Add(DT_C5_Barrier);
@@ -390,6 +395,11 @@ bool AHDMapVisualizer::GetPointsByLineID(const FString& LineID, TArray<FVector>&
 			else if (Table == DT_A4_Subsidiary)
 			{
 				OutPoints = ((FHDMapA4SubsidiaryRow*)FoundRow)->Points;
+				return true;
+			}
+			else if (Table == DT_Sidewalk)
+			{
+				OutPoints = ((FHDMapSidewalkRow*)FoundRow)->Points;
 				return true;
 			}
 			else if (Table == DT_B3_Mark)

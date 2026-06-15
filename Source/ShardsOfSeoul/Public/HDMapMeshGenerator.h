@@ -34,6 +34,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "50.0"))
 	float DefaultRoadWidth;
 
+	// 도로 압출 생성 시 적용할 도로 수직 두께/높이 (센티미터 단위, 기본값 50cm)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "0.0"))
+	float RoadHeight;
+
 	// 차선 간 경계를 형성할 때 적용할 기본 차선 너비 (센티미터 단위, 기본값 300cm = 3m)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "50.0"))
 	float LaneWidth;
@@ -66,7 +70,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "50.0"))
 	float GridSpacing;
 
-
+	// true 일 경우 도로 다각형 내부에 GridSpacing 간격의 보조 정점을 생성하여 지형 밀착도를 높입니다.
+	// false 로 끄면 외곽 경계 정점만으로 메쉬를 생성하므로 생성 속도가 빠르고 폴리곤 수가 줄어듭니다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings")
+	bool bEnableGridRefinement;
 
 	// 점 병합(Point Welding) 반경 (센티미터 단위, 이 반경 내의 점들은 하나로 합쳐짐)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "1.0"))
@@ -80,9 +87,57 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "0.0", ClampMax = "45.0"))
 	float MinAngleDegree;
 
+	// 에지(모서리) 하나당 고정 분할할 개수 (기본값 5, 1이면 분할 안 함)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "1"))
+	int32 EdgeSubdivisionCount;
+
 	// Z축 고도 오프셋 (지형 메쉬와의 Z-fighting 깜빡임 방지용 센티미터 단위 오프셋)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings")
 	float ZOffset;
+
+	// 인도 압출 생성 시 적용할 인도 수직 두께/높이 (센티미터 단위, 기본값 20cm)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Sidewalk Settings", meta = (ClampMin = "0.0"))
+	float SidewalkHeight;
+
+	// 인도 Z축 고도 오프셋 (도로와의 높이 정렬 및 깜빡임 방지용, 기본값 30cm)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Sidewalk Settings")
+	float SidewalkZOffset;
+
+	// 인도 내부 그리드 정점 생성 간격 (센티미터 단위, 기본값 200cm, 낮을수록 촘촘해져 지형 밀착도가 극대화됩니다.)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Sidewalk Settings", meta = (ClampMin = "50.0"))
+	float SidewalkGridSpacing;
+
+	// true 일 경우 인도 다각형 내부에 SidewalkGridSpacing 간격의 보조 정점을 생성하여 지형 밀착도를 높입니다.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Sidewalk Settings")
+	bool bEnableSidewalkGridRefinement;
+
+	// --- Lane Settings ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	UMaterialInterface* WhiteMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	UMaterialInterface* YellowMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	UMaterialInterface* BlueMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings", meta = (ClampMin = "1.0"))
+	float LaneMarkWidth; // 단선 너비 (기본 15cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings", meta = (ClampMin = "0.0"))
+	float LaneMarkGap; // 겹선 간격 (기본 10cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	float LaneMarkZOffset; // 노면 스냅 오프셋 (기본 1cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings", meta = (ClampMin = "10.0"))
+	float LaneSampleDistance; // 곡선 구현용 차선 리샘플링 간격 (기본 100cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	float LaneDashedSolidLength; // 점선 생성 길이 (기본 300cm = 3m)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
+	float LaneDashedSpaceLength; // 점선 공백 길이 (기본 300cm = 3m)
 
 	// 공간 분할 격자 크기 (센티미터 단위, 대규모 정점의 삼각분할 연산 속도 개선 및 왜곡 방지용 격자 크기)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "500.0"))
@@ -92,9 +147,37 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	ADynamicMeshActor* OutputDynamicMeshActor;
 
+	// 인도 메쉬 생성 결과를 구워낼 타겟 Dynamic Mesh Actor (월드 상의 액터)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	ADynamicMeshActor* OutputSidewalkDynamicMeshActor;
+
+	// 차선 메쉬 생성 결과를 구워낼 타겟 Dynamic Mesh Actor (월드 상의 액터)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	ADynamicMeshActor* OutputLaneDynamicMeshActor;
+
 	// Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanRoad)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	FString SaveAssetPath;
+
+	// 인도 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanSidewalk)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	FString SaveSidewalkAssetPath;
+
+	// 차선 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanLane)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	FString SaveLaneAssetPath;
+
+	// 높이 분석 타겟으로 삼을 월드에 배치된 도로 Static Mesh Actor
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Snap Target")
+	class AStaticMeshActor* TargetRoadStaticMeshActor;
+
+	// [Landscape Carve] 도로 노면 Z 기준으로 얼마나 더 아래를 깎을지 (cm, 음수 = 더 깊이)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Landscape Carve")
+	float CarveZOffset;
+
+	// [Landscape Carve] 도로 경계 바깥으로 자연스럽게 경사를 이어붙일 Feather 반경 (cm)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Landscape Carve", meta = (ClampMin = "0.0"))
+	float CarveFeatherRadius;
 
 	// 도로 노면 메쉬 생성 기능 호출 버튼
 	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
@@ -103,6 +186,27 @@ public:
 	// 생성된 메쉬를 Static Mesh 에셋으로 저장하는 버튼
 	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
 	void SaveToStaticMeshAsset();
+
+	// 인도 메쉬 생성 기능 호출 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void GenerateSidewalkMesh();
+
+	// 생성된 인도 메쉬를 Static Mesh 에셋으로 저장하는 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void SaveSidewalkToStaticMeshAsset();
+
+	// 차선 메쉬 생성 기능 호출 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void GenerateLaneMesh();
+
+	// 생성된 차선 메쉬를 Static Mesh 에셋으로 저장하는 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void SaveLaneToStaticMeshAsset();
+
+	// 도로 다각형 영역에 맞춰 Landscape 높이맵을 직접 깎아내는 에디터 전용 기능
+	// ⚠️ 실행 전 레벨 저장/백업 권장 (Ctrl+Z로 Undo 가능)
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void CarveLandscapeForRoads();
 
 private:
 	// 2D 델로네 삼각분할을 수행하는 핵심 헬퍼 함수
@@ -116,4 +220,10 @@ private:
 
 	// 레이트레이싱을 통해 월드 지형의 Z 고도값 탐색
 	float GetLandscapeZ(const FVector& WorldPos);
+
+	// 월드 XY 좌표점에서 다각형(월드 좌표 FVector 배열) 외곽 에지까지의 최소 2D 거리 반환
+	static float ComputeDistToPolygon2D(const FVector2D& Point, const TArray<FVector>& PolyWorldPoints);
+
+	// 특정 2D 좌표에서 도로 메쉬의 높이(Z)를 구하고, 없을 경우 FallbackZ를 반환
+	float GetRoadMeshZ(class UDynamicMesh* RoadDynMesh, const FVector2D& Pt, float FallbackZ, const FTransform& ActorTransform);
 };

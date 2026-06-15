@@ -6,10 +6,18 @@
 #include "UDynamicMesh.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "GeometryScript/MeshAssetFunctions.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Landscape.h"
 #include "LandscapeProxy.h"
 #include "EngineUtils.h"
+#if WITH_EDITOR
+#include "LandscapeEdit.h"       // FLandscapeEditDataInterface
+#include "LandscapeInfo.h"       // ULandscapeInfo
+#include "LandscapeDataAccess.h" // LANDSCAPE_ZSCALE
+#endif
 
 // 델로네 삼각분할 내부 자료구조
 enum class EHDMapVertexType : uint8
@@ -82,6 +90,7 @@ AHDMapMeshGenerator::AHDMapMeshGenerator()
 
 	// 기본값 세팅
 	DefaultRoadWidth = 600.f;   // 기본 도로 폭 6m (600cm)
+	RoadHeight = 50.f;          // 도로 기본 수직 두께 50cm
 	LaneWidth = 300.f;          // 기본 차선 폭 3m (300cm)
 	bUseDelaunay = true;        // 기본으로 델로네 삼각분할 생성 모드 사용
 	bOnlyUseMapData = true;     // 기본으로 오직 MapData 다각형만 사용
@@ -89,12 +98,35 @@ AHDMapMeshGenerator::AHDMapMeshGenerator()
 	TunnelRoadZ = -1500.f;      // 기본 지하 도로 깊이 -15m
 	SampleDistance = 1000.f;    // 중심선 리샘플링 기본 간격 10m (1000cm)
 	GridSpacing = 300.f;        // 내부 그리드 생성 간격 기본값 3m (300cm)
-	WeldDistance = 50.f;        // 50cm 내의 점들은 동일 정점으로 병합
+	bEnableGridRefinement = true; // 기본으로 내부 그리드 정점 생성 활성화
+	WeldDistance = 10.f;        // 10cm 내의 점들은 동일 정점으로 병합
 	MaxEdgeLength = 1500.f;     // 삼각형 한 변의 최대 길이 15m 제한
 	MinAngleDegree = 3.f;       // 내각 제한 최소 3도 (매우 길쭉하고 얇은 노이즈 삼각형 제거)
-	ZOffset = 2.f;              // 지형과의 깜빡임(Z-fighting) 방지를 위한 높이 보정치 2cm
+	EdgeSubdivisionCount = 5;   // 기본적으로 각 에지를 5등분으로 분할
+	ZOffset = 30.f;             // 지형과의 깜빡임(Z-fighting) 방지를 위한 높이 보정치 30cm
 	GridSize = 5000.f;          // 대규모 연산 부하 개선을 위한 공간 격자 크기 (50m)
+	OutputSidewalkDynamicMeshActor = nullptr;
+	SidewalkHeight = 20.f;
+	SidewalkZOffset = 30.f;
+	SidewalkGridSpacing = 200.f;
+	bEnableSidewalkGridRefinement = true;
 	SaveAssetPath = TEXT("/Game/HDMap/SM_NamsanRoad");
+	SaveSidewalkAssetPath = TEXT("/Game/HDMap/SM_NamsanSidewalk");
+	CarveZOffset = -5.f;       // 도로 노면보다 5cm 아래까지 깎기
+	CarveFeatherRadius = 300.f; // 경계 바깥 3m 구간 Feather 블렌딩
+
+	// 차선 기본값 세팅
+	OutputLaneDynamicMeshActor = nullptr;
+	WhiteMaterial = nullptr;
+	YellowMaterial = nullptr;
+	BlueMaterial = nullptr;
+	LaneMarkWidth = 15.f;       // 15cm
+	LaneMarkGap = 10.f;         // 10cm
+	LaneMarkZOffset = 1.0f;     // 1cm (Z-fighting 방지 및 밀착 노면 위 돌출)
+	LaneSampleDistance = 100.f; // 1m 간격으로 조밀하게 곡선화 리샘플링
+	LaneDashedSolidLength = 300.f; // 3m
+	LaneDashedSpaceLength = 500.f; // 5m (그 외 점선 기본값)
+	SaveLaneAssetPath = TEXT("/Game/HDMap/SM_NamsanLane");
 }
 
 
@@ -217,6 +249,13 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 			
 			UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Loaded %d driveways from HDMapDataTable."), AllDriveways.Num());
 
+			// ═══════════════════════════════════════════════════════════════════
+			// 패스 1: 모든 다각형 경계점 수집 (월드 좌표 변환)
+			// ═══════════════════════════════════════════════════════════════════
+			TArray<TArray<FVector>> PolyBoundaries;     // 각 다각형의 월드 좌표 경계점
+			TArray<bool>            PolyIsTunnel;        // 터널 여부
+			TArray<FHDMapLineRow*>  PolyRows;            // 원본 데이터 행 참조
+
 			for (FHDMapLineRow* DwRow : AllDriveways)
 			{
 				if (!DwRow || DwRow->ID.Equals(TEXT("ORIGIN")) || DwRow->Points.Num() < 3) continue;
@@ -249,8 +288,203 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 					LocalVertices.Add(PtWorld);
 				}
 
+				PolyBoundaries.Add(MoveTemp(LocalVertices));
+				PolyIsTunnel.Add(bIsTunnel);
+				PolyRows.Add(DwRow);
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Collected %d polygons. Starting global boundary vertex weld..."), PolyBoundaries.Num());
+
+			// ═══════════════════════════════════════════════════════════════════
+			// 패스 1.5: 글로벌 경계 정점 병합 (Disjoint Set Weld, 원본 정점 대상)
+			// ═══════════════════════════════════════════════════════════════════
+			// 모든 다각형의 각 정점 중 서로 다른 다각형 소속이면서 XY 거리가 WeldDistance 이내인
+			// 짝이 맞는 정점들을 하나의 대표 좌표(평균값)로 완벽히 병합합니다.
+			struct FGlobalVertexRef
+			{
+				int32 PolyIdx;
+				int32 VertIdx;
+				FVector* ValuePtr;
+			};
+
+			TArray<FGlobalVertexRef> GlobalVerts;
+			for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+			{
+				for (int32 VertIdx = 0; VertIdx < PolyBoundaries[PolyIdx].Num(); ++VertIdx)
+				{
+					GlobalVerts.Add({ PolyIdx, VertIdx, &PolyBoundaries[PolyIdx][VertIdx] });
+				}
+			}
+
+			const int32 TotalVerts = GlobalVerts.Num();
+			if (TotalVerts > 0)
+			{
+				FDisjointSet DS(TotalVerts);
+				for (int32 i = 0; i < TotalVerts; ++i)
+				{
+					for (int32 j = i + 1; j < TotalVerts; ++j)
+					{
+						// 같은 다각형의 자체 인접 에지 정점을 weld하는 것을 방지하기 위해 다각형 인덱스가 다른 경우에만 weld 수행
+						if (GlobalVerts[i].PolyIdx == GlobalVerts[j].PolyIdx) continue;
+
+						if (FVector::DistXY(*GlobalVerts[i].ValuePtr, *GlobalVerts[j].ValuePtr) < WeldDistance)
+						{
+							DS.Union(i, j);
+						}
+					}
+				}
+
+				TArray<FVector> GroupSum;
+				TArray<int32> GroupCount;
+				GroupSum.AddZeroed(TotalVerts);
+				GroupCount.AddZeroed(TotalVerts);
+
+				for (int32 i = 0; i < TotalVerts; ++i)
+				{
+					int32 Root = DS.Find(i);
+					GroupSum[Root] += *GlobalVerts[i].ValuePtr;
+					GroupCount[Root]++;
+				}
+
+				for (int32 i = 0; i < TotalVerts; ++i)
+				{
+					int32 Root = DS.Find(i);
+					FVector AvgPt = GroupSum[Root] / (float)GroupCount[Root];
+					*GlobalVerts[i].ValuePtr = AvgPt;
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Global boundary vertex weld done. Processed %d vertices."), TotalVerts);
+			}
+
+			// ═══════════════════════════════════════════════════════════════════
+			// 패스 2: 경계 정점 중복 제거 (모서리 밀집 해소)
+			// ═══════════════════════════════════════════════════════════════════
+			// 병합된 정점 중 연속된 두 정점이 WeldDistance 이내에 있으면 하나를 제거
+			for (TArray<FVector>& Boundary : PolyBoundaries)
+			{
+				for (int32 i = Boundary.Num() - 1; i > 0; --i)
+				{
+					if (FVector::DistXY(Boundary[i], Boundary[i - 1]) < WeldDistance)
+					{
+						Boundary.RemoveAt(i);
+					}
+				}
+				// 첫 정점과 마지막 정점도 검사 (닫힌 다각형)
+				if (Boundary.Num() > 1 && FVector::DistXY(Boundary[0], Boundary.Last()) < WeldDistance)
+				{
+					Boundary.RemoveAt(Boundary.Num() - 1);
+				}
+			}
+
+			// ═══════════════════════════════════════════════════════════════════
+			// 패스 2.5: 에지 분할 (Edge Subdivision - Weld 및 중복 제거 완료 후 사후 분할)
+			// ═══════════════════════════════════════════════════════════════════
+			// 각 다각형의 모서리를 EdgeSubdivisionCount 개수로 나눕니다.
+			if (EdgeSubdivisionCount > 1)
+			{
+				TArray<TArray<FVector>> SubdividedBoundaries;
+				SubdividedBoundaries.Reserve(PolyBoundaries.Num());
+				for (const TArray<FVector>& Boundary : PolyBoundaries)
+				{
+					TArray<FVector> NewBoundary;
+					const int32 NumPts = Boundary.Num();
+					if (NumPts < 3)
+					{
+						SubdividedBoundaries.Add(Boundary);
+						continue;
+					}
+					NewBoundary.Reserve(NumPts * EdgeSubdivisionCount);
+					for (int32 i = 0; i < NumPts; ++i)
+					{
+						const FVector& V0 = Boundary[i];
+						const FVector& V1 = Boundary[(i + 1) % NumPts];
+						NewBoundary.Add(V0);
+						for (int32 Step = 1; Step < EdgeSubdivisionCount; ++Step)
+						{
+							float T = (float)Step / (float)EdgeSubdivisionCount;
+							FVector SubdivPt = FMath::Lerp(V0, V1, T);
+							NewBoundary.Add(SubdivPt);
+						}
+					}
+					SubdividedBoundaries.Add(MoveTemp(NewBoundary));
+				}
+				PolyBoundaries = MoveTemp(SubdividedBoundaries);
+			}
+
+			// 에지별 출현 횟수 카운팅을 위한 맵과 캐싱 인덱스 배열 정의
+			auto GetEdgeKey = [](int32 V0, int32 V1) -> uint64
+			{
+				int32 MinV = FMath::Min(V0, V1);
+				int32 MaxV = FMath::Max(V0, V1);
+				return ((uint64)MinV << 32) | (uint32)MaxV;
+			};
+
+			TArray<TArray<int32>> PolyBottomIndices;
+			TArray<TArray<int32>> PolyTopIndices;
+			PolyBottomIndices.AddDefaulted(PolyBoundaries.Num());
+			PolyTopIndices.AddDefaulted(PolyBoundaries.Num());
+
+			// 정점 인덱스를 전 다각형에 대해 일괄적으로 미리 확보
+			for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+			{
+				TArray<FVector>& BoundaryPoints = PolyBoundaries[PolyIdx];
+				int32 BoundaryCount = BoundaryPoints.Num();
+
+				PolyBottomIndices[PolyIdx].AddUninitialized(BoundaryCount);
+				PolyTopIndices[PolyIdx].AddUninitialized(BoundaryCount);
+
+				FHDMapLineRow* DwRow = PolyRows[PolyIdx];
+
+				for (int32 v = 0; v < BoundaryCount; ++v)
+				{
+					FVector BasePos = BoundaryPoints[v];
+					
+					FVector BottomPos = BasePos; // 도로 바닥 높이
+					PolyBottomIndices[PolyIdx][v] = FindOrAddVertex(BottomPos, WeldDistance, DwRow->ID);
+
+					FVector TopPos = BasePos;
+					TopPos.Z += RoadHeight; // 도로 상판 높이 (두께만큼 위로 돌출)
+					PolyTopIndices[PolyIdx][v] = FindOrAddVertex(TopPos, WeldDistance, DwRow->ID);
+				}
+			}
+
+			// 에지별 출현 횟수 카운팅
+			TMap<uint64, int32> EdgeUsageMap;
+			for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+			{
+				int32 BoundaryCount = PolyBoundaries[PolyIdx].Num();
+				if (BoundaryCount < 3) continue;
+
+				const TArray<int32>& BottomIndices = PolyBottomIndices[PolyIdx];
+
+				for (int32 i = 0; i < BoundaryCount; ++i)
+				{
+					int32 next_i = (i + 1) % BoundaryCount;
+					int32 B0 = BottomIndices[i];
+					int32 B1 = BottomIndices[next_i];
+
+					uint64 EdgeKey = GetEdgeKey(B0, B1);
+					EdgeUsageMap.FindOrAdd(EdgeKey, 0)++;
+				}
+			}
+
+			// ═══════════════════════════════════════════════════════════════════
+			// 패스 3: 동기화된 정점으로 삼각분할 (볼륨화 구현)
+			// ═══════════════════════════════════════════════════════════════════
+			for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+			{
+				TArray<FVector>& LocalVertices = PolyBoundaries[PolyIdx];
+				const bool bIsTunnel = PolyIsTunnel[PolyIdx];
+				FHDMapLineRow* DwRow = PolyRows[PolyIdx];
+
+				TArray<FVector> SyncBoundary = LocalVertices;
+				int32 BoundaryCount = SyncBoundary.Num();
+
+				const TArray<int32>& BottomGlobalIndices = PolyBottomIndices[PolyIdx];
+				const TArray<int32>& TopGlobalIndices = PolyTopIndices[PolyIdx];
+
 				// 2) 도로 내부 그리드 정점 자동 추가 (Grid Refinement)
-				if (!bIsTunnel && bSnapToLandscape && DwRow->Points.Num() >= 3)
+				if (!bIsTunnel && bSnapToLandscape && bEnableGridRefinement && DwRow->Points.Num() >= 3)
 				{
 					FBox2D PolyBox(EForceInit::ForceInit);
 					for (const FVector& Pt : DwRow->Points)
@@ -258,7 +492,6 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 						PolyBox += FVector2D(Pt.X, Pt.Y);
 					}
 
-					// 그리드 간격 안전 값 보장 (무한루프 방지 최소 50cm 제한)
 					float LocalGridSpacing = FMath::Max(50.f, GridSpacing); 
 
 					for (float GridX = PolyBox.Min.X + LocalGridSpacing; GridX < PolyBox.Max.X; GridX += LocalGridSpacing)
@@ -271,7 +504,6 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 								FVector PtLocal(GridX, GridY, 0.f);
 								FVector PtWorld = VisTransform.TransformPosition(PtLocal);
 								
-								// 지형 높이 실시간 탐색 및 스냅
 								float LandZ = GetLandscapeZ(PtWorld);
 								PtWorld.Z = LandZ + ZOffset;
 
@@ -286,12 +518,26 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 				TArray<FIntVector> RawTriangles;
 				if (RunDelaunayTriangulation(LocalVertices, RawTriangles))
 				{
-					TArray<int32> LocalToGlobalIndexMap;
-					LocalToGlobalIndexMap.AddUninitialized(LocalVertices.Num());
+					TArray<int32> TopDelaunayGlobalIndices;
+					TArray<int32> BottomDelaunayGlobalIndices;
+					TopDelaunayGlobalIndices.AddUninitialized(LocalVertices.Num());
+					BottomDelaunayGlobalIndices.AddUninitialized(LocalVertices.Num());
 
-					for (int32 LocalIdx = 0; LocalIdx < LocalVertices.Num(); ++LocalIdx)
+					// 경계 정점들은 이미 캐싱된 상판/하판 인덱스를 매칭
+					for (int32 v = 0; v < BoundaryCount; ++v)
 					{
-						LocalToGlobalIndexMap[LocalIdx] = FindOrAddVertex(LocalVertices[LocalIdx], WeldDistance, DwRow->ID);
+						TopDelaunayGlobalIndices[v] = TopGlobalIndices[v];
+						BottomDelaunayGlobalIndices[v] = BottomGlobalIndices[v];
+					}
+					// 내부 그리드 정점들은 새로이 FindOrAddVertex 수행
+					for (int32 v = BoundaryCount; v < LocalVertices.Num(); ++v)
+					{
+						FVector BottomPos = LocalVertices[v];
+						BottomDelaunayGlobalIndices[v] = FindOrAddVertex(BottomPos, WeldDistance, DwRow->ID);
+
+						FVector TopPos = LocalVertices[v];
+						TopPos.Z += RoadHeight;
+						TopDelaunayGlobalIndices[v] = FindOrAddVertex(TopPos, WeldDistance, DwRow->ID);
 					}
 
 					for (const FIntVector& Tri : RawTriangles)
@@ -301,10 +547,9 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 						FVector V2 = LocalVertices[Tri.Z];
 
 						FVector Centroid = (V0 + V1 + V2) / 3.0f;
-						FVector LocalCentroid = VisTransform.InverseTransformPosition(Centroid);
-						FVector2D Centroid2D(LocalCentroid.X, LocalCentroid.Y);
+						FVector2D Centroid2D(Centroid.X, Centroid.Y);
 
-						if (IsPointInPolygon2D(Centroid2D, DwRow->Points))
+						if (IsPointInPolygon2D(Centroid2D, SyncBoundary))
 						{
 							FVector E0 = V1 - V0;
 							FVector E1 = V2 - V0;
@@ -318,14 +563,52 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 								FinalZ = Tri.Y;
 							}
 
-							int32 G_X = LocalToGlobalIndexMap[Tri.X];
-							int32 G_Y = LocalToGlobalIndexMap[FinalY];
-							int32 G_Z = LocalToGlobalIndexMap[FinalZ];
-
-							if (G_X != G_Y && G_Y != G_Z && G_Z != G_X)
+							// 1) 상판(Top Face) 삼각형 추가
+							int32 G_TopX = TopDelaunayGlobalIndices[Tri.X];
+							int32 G_TopY = TopDelaunayGlobalIndices[FinalY];
+							int32 G_TopZ = TopDelaunayGlobalIndices[FinalZ];
+							if (G_TopX != G_TopY && G_TopY != G_TopZ && G_TopZ != G_TopX)
 							{
-								GlobalTriangles.Add(FIntVector(G_X, G_Y, G_Z));
+								GlobalTriangles.Add(FIntVector(G_TopX, G_TopY, G_TopZ));
 							}
+
+							// 2) 하판(Bottom Face) 삼각형 추가 (아래를 바라보도록 Winding Order 반전)
+							int32 G_BotX = BottomDelaunayGlobalIndices[Tri.X];
+							int32 G_BotY = BottomDelaunayGlobalIndices[FinalY];
+							int32 G_BotZ = BottomDelaunayGlobalIndices[FinalZ];
+							if (G_BotX != G_BotY && G_BotY != G_BotZ && G_BotZ != G_BotX)
+							{
+								GlobalTriangles.Add(FIntVector(G_BotX, G_BotZ, G_BotY));
+							}
+						}
+					}
+				}
+
+				// 3) 수직 측벽(Side Wall) 생성 (공유하지 않는 외곽 에지만 생성)
+				if (BoundaryCount >= 3)
+				{
+					for (int32 i = 0; i < BoundaryCount; ++i)
+					{
+						int32 next_i = (i + 1) % BoundaryCount;
+
+						int32 B0 = BottomGlobalIndices[i];
+						int32 B1 = BottomGlobalIndices[next_i];
+						int32 T0 = TopGlobalIndices[i];
+						int32 T1 = TopGlobalIndices[next_i];
+
+						uint64 EdgeKey = GetEdgeKey(B0, B1);
+						if (EdgeUsageMap.FindRef(EdgeKey) > 1)
+						{
+							continue;
+						}
+
+						if (B0 != B1 && B1 != T1 && T1 != B0)
+						{
+							GlobalTriangles.Add(FIntVector(B0, B1, T1));
+						}
+						if (B0 != T1 && T1 != T0 && T0 != B0)
+						{
+							GlobalTriangles.Add(FIntVector(B0, T1, T0));
 						}
 					}
 				}
@@ -1452,4 +1735,1363 @@ float AHDMapMeshGenerator::GetLandscapeZ(const FVector& WorldPos)
 
 	// 지형을 찾지 못한 경우 원래 Z값 반환
 	return WorldPos.Z;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Landscape Carving
+// ─────────────────────────────────────────────────────────────────────────────
+
+float AHDMapMeshGenerator::ComputeDistToPolygon2D(const FVector2D& Point, const TArray<FVector>& PolyWorldPoints)
+{
+	float MinDist = FLT_MAX;
+	const int32 N = PolyWorldPoints.Num();
+	for (int32 i = 0; i < N; ++i)
+	{
+		const int32 j = (i + 1) % N;
+		const FVector2D A(PolyWorldPoints[i].X, PolyWorldPoints[i].Y);
+		const FVector2D B(PolyWorldPoints[j].X, PolyWorldPoints[j].Y);
+		const FVector2D AB = B - A;
+		const float ABLenSq = AB.SizeSquared();
+		float Dist;
+		if (ABLenSq < 1e-6f)
+		{
+			Dist = FVector2D::Distance(Point, A);
+		}
+		else
+		{
+			const float T = FMath::Clamp(FVector2D::DotProduct(Point - A, AB) / ABLenSq, 0.f, 1.f);
+			Dist = FVector2D::Distance(Point, A + T * AB);
+		}
+		MinDist = FMath::Min(MinDist, Dist);
+	}
+	return MinDist;
+}
+
+void AHDMapMeshGenerator::CarveLandscapeForRoads()
+{
+#if WITH_EDITOR
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CarveLandscape] VisualizerActor가 지정되지 않았습니다."));
+		return;
+	}
+
+	UDataTable* DrivewayTable = VisualizerActor->HDMapDataTable;
+	if (!DrivewayTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CarveLandscape] HDMapDataTable이 비어있습니다."));
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	// ─── 1. 도로 다각형 수집 (터널 제외, ORIGIN 제외) ───────────────────────
+	struct FRoadPolygon
+	{
+		TArray<FVector> WorldPoints; // 월드 좌표계 FVector (XY 평면 사용)
+		float           TargetWorldZ; // 조각 목표 Z (다각형 평균 Z + CarveZOffset)
+	};
+
+	TArray<FHDMapLineRow*> AllDriveways;
+	DrivewayTable->GetAllRows<FHDMapLineRow>(TEXT("CarveLandscape"), AllDriveways);
+
+	TArray<FRoadPolygon> RoadPolygons;
+	for (FHDMapLineRow* DwRow : AllDriveways)
+	{
+		if (!DwRow || DwRow->ID.Equals(TEXT("ORIGIN")) || DwRow->Points.Num() < 3) continue;
+		if (TunnelRoadIDs.Contains(DwRow->ID)) continue; // 지하 도로는 제외
+
+		FRoadPolygon Poly;
+		float SumZ = 0.f;
+		for (const FVector& Pt : DwRow->Points)
+		{
+			FVector WorldPt = VisTransform.TransformPosition(Pt);
+			Poly.WorldPoints.Add(WorldPt);
+			SumZ += WorldPt.Z;
+		}
+		// 다각형 꼭짓점 평균 Z를 목표 깊이로 사용
+		Poly.TargetWorldZ = (SumZ / (float)DwRow->Points.Num()) + CarveZOffset;
+		RoadPolygons.Add(MoveTemp(Poly));
+	}
+
+	if (RoadPolygons.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[CarveLandscape] 처리할 도로 다각형이 없습니다."));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[CarveLandscape] %d개 도로 다각형으로 Landscape 조각 시작..."), RoadPolygons.Num());
+
+	int32 TotalModifiedVerts = 0;
+
+	// ─── 2. 씬의 모든 Landscape Proxy 순회 ──────────────────────────────────
+	for (TActorIterator<ALandscapeProxy> It(World); It; ++It)
+	{
+		ALandscapeProxy* LandscapeProxy = *It;
+		if (!IsValid(LandscapeProxy)) continue;
+
+		ULandscapeInfo* LandscapeInfo = LandscapeProxy->GetLandscapeInfo();
+		if (!LandscapeInfo) continue;
+
+		const FTransform LandscapeTransform = LandscapeProxy->GetActorTransform();
+		const FVector    LandscapeScale     = LandscapeProxy->GetActorScale3D();
+		const float      LandscapeOriginZ   = LandscapeTransform.GetLocation().Z;
+
+		// Landscape vertex 전체 범위 획득
+		int32 MinX = MAX_int32, MinY = MAX_int32, MaxX = MIN_int32, MaxY = MIN_int32;
+		if (!LandscapeInfo->GetLandscapeExtent(MinX, MinY, MaxX, MaxY))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[CarveLandscape] '%s' Extents를 가져올 수 없습니다."), *LandscapeProxy->GetName());
+			continue;
+		}
+
+		const int32 SizeX = MaxX - MinX + 1;
+		const int32 SizeY = MaxY - MinY + 1;
+
+		// 전체 높이맵 읽기
+		TArray<uint16> HeightData;
+		HeightData.AddUninitialized(SizeX * SizeY);
+		{
+			FLandscapeEditDataInterface LandscapeEdit(LandscapeInfo);
+			LandscapeEdit.GetHeightData(MinX, MinY, MaxX, MaxY, HeightData.GetData(), 0);
+		}
+
+		bool bModified = false;
+		int32 LandscapeModifiedVerts = 0;
+
+		// ─── 3. 각 도로 다각형 처리 ────────────────────────────────────────
+		for (const FRoadPolygon& RoadPoly : RoadPolygons)
+		{
+			const TArray<FVector>& WorldPoly = RoadPoly.WorldPoints;
+
+			// 다각형 AABB (Feather 반경 + 여백 포함 확장)
+			FBox PolyWorldBox(EForceInit::ForceInit);
+			for (const FVector& Pt : WorldPoly) PolyWorldBox += Pt;
+			PolyWorldBox = PolyWorldBox.ExpandBy(CarveFeatherRadius + LandscapeScale.X);
+
+			// AABB → Landscape vertex 인덱스 범위 변환
+			auto WorldToVert = [&](const FVector& WPos, int32& OutX, int32& OutY)
+			{
+				const FVector Local = LandscapeTransform.InverseTransformPosition(WPos);
+				OutX = FMath::RoundToInt(Local.X);
+				OutY = FMath::RoundToInt(Local.Y);
+			};
+
+			int32 VMinX, VMinY, VMaxX, VMaxY;
+			WorldToVert(PolyWorldBox.Min, VMinX, VMinY);
+			WorldToVert(PolyWorldBox.Max, VMaxX, VMaxY);
+
+			// Min/Max 순서 보정 (Landscape 회전 시 역전 가능)
+			if (VMinX > VMaxX) Swap(VMinX, VMaxX);
+			if (VMinY > VMaxY) Swap(VMinY, VMaxY);
+
+			// Landscape 범위로 클램프
+			VMinX = FMath::Clamp(VMinX, MinX, MaxX);
+			VMinY = FMath::Clamp(VMinY, MinY, MaxY);
+			VMaxX = FMath::Clamp(VMaxX, MinX, MaxX);
+			VMaxY = FMath::Clamp(VMaxY, MinY, MaxY);
+
+			// 목표 WorldZ → Landscape uint16 heightmap 값 변환
+			// LocalZ = (WorldZ - LandscapeZ) / ScaleZ
+			// HeightValue = LocalZ * 128 + 32768  (LANDSCAPE_ZSCALE = 1/128)
+			const float   TargetLocalZ      = (RoadPoly.TargetWorldZ - LandscapeOriginZ) / LandscapeScale.Z;
+			const uint16  TargetHeightValue = (uint16)FMath::Clamp(TargetLocalZ * 128.f + 32768.f, 0.f, 65535.f);
+
+			// ─── 4. AABB 내 각 vertex 처리 ─────────────────────────────────
+			for (int32 VY = VMinY; VY <= VMaxY; ++VY)
+			{
+				for (int32 VX = VMinX; VX <= VMaxX; ++VX)
+				{
+					// vertex 월드 XY 위치
+					const FVector VertWorldPos = LandscapeTransform.TransformPosition(
+						FVector((float)VX, (float)VY, 0.f));
+					const FVector2D VertXY(VertWorldPos.X, VertWorldPos.Y);
+
+					// 다각형 내부 판정
+					const bool bInside = IsPointInPolygon2D(VertXY, WorldPoly);
+					float DistToEdge = 0.f;
+
+					if (!bInside)
+					{
+						DistToEdge = ComputeDistToPolygon2D(VertXY, WorldPoly);
+						if (DistToEdge > CarveFeatherRadius) continue; // Feather 범위 밖 → 스킵
+					}
+
+					// heightmap 배열 인덱스
+					const int32 ArrX = VX - MinX;
+					const int32 ArrY = VY - MinY;
+					if (ArrX < 0 || ArrX >= SizeX || ArrY < 0 || ArrY >= SizeY) continue;
+
+					const int32 Idx          = ArrY * SizeX + ArrX;
+					const uint16 CurHeight   = HeightData[Idx];
+					uint16       NewHeight;
+
+					if (bInside)
+					{
+						// 내부: 목표 높이보다 낮을 때만 깎기 (기존이 이미 낮으면 건드리지 않음)
+						NewHeight = FMath::Min(CurHeight, TargetHeightValue);
+					}
+					else
+					{
+						// Feather 경계: 0(경계선)~1(반경 끝) 블렌딩 → 자연스러운 경사
+						const float  BlendAlpha = FMath::Clamp(DistToEdge / CarveFeatherRadius, 0.f, 1.f);
+						const float  Blended    = FMath::Lerp((float)TargetHeightValue, (float)CurHeight, BlendAlpha);
+						NewHeight = (uint16)FMath::Clamp(Blended, 0.f, 65535.f);
+						// Feather 구간도 기존보다 높게 올리지는 않음
+						NewHeight = FMath::Min(NewHeight, CurHeight);
+					}
+
+					if (NewHeight != CurHeight)
+					{
+						HeightData[Idx] = NewHeight;
+						bModified = true;
+						++LandscapeModifiedVerts;
+					}
+				}
+			}
+		} // end for RoadPolygons
+
+		// ─── 5. 수정된 높이맵 적용 ───────────────────────────────────────────
+		if (bModified)
+		{
+			FLandscapeEditDataInterface LandscapeEdit(LandscapeInfo);
+			LandscapeEdit.SetHeightData(MinX, MinY, MaxX, MaxY, HeightData.GetData(), 0, true);
+			LandscapeProxy->MarkPackageDirty();
+			LandscapeInfo->UpdateAllAddCollisions();
+			TotalModifiedVerts += LandscapeModifiedVerts;
+			UE_LOG(LogTemp, Log, TEXT("[CarveLandscape] '%s': %d개 vertex 수정됨."),
+				*LandscapeProxy->GetName(), LandscapeModifiedVerts);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log, TEXT("[CarveLandscape] '%s': 수정 대상 없음 (도로가 이미 지형보다 높거나 범위 밖)."),
+				*LandscapeProxy->GetName());
+		}
+
+	} // end for ALandscapeProxy
+
+	UE_LOG(LogTemp, Log, TEXT("[CarveLandscape] 완료 — 총 %d개 vertex 수정."), TotalModifiedVerts);
+
+#else
+	UE_LOG(LogTemp, Warning, TEXT("[CarveLandscape] 에디터 전용 기능입니다. 패키징된 빌드에서는 동작하지 않습니다."));
+#endif
+}
+
+void AHDMapMeshGenerator::GenerateSidewalkMesh()
+{
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is not specified."));
+		return;
+	}
+
+	if (!OutputSidewalkDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] OutputSidewalkDynamicMeshActor is not specified."));
+		return;
+	}
+
+	OutputSidewalkDynamicMeshActor->SetActorTransform(FTransform::Identity);
+
+	UDataTable* SidewalkTable = VisualizerActor->DT_Sidewalk;
+	if (!SidewalkTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] DT_Sidewalk is not mapped."));
+		return;
+	}
+
+	TArray<FHDMapSidewalkRow*> TargetRows;
+	SidewalkTable->GetAllRows<FHDMapSidewalkRow>(TEXT("HDMapMeshGen_AllSidewalkSearch"), TargetRows);
+
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	// ─── 도로 메쉬 고도 쿼리를 위한 캐싱 셋업 ───────────────────────────
+	UDynamicMesh* RoadDynMesh = nullptr;
+	FTransform SnapTransform = FTransform::Identity;
+	UDynamicMesh* TempRoadDynMesh = nullptr; // GC 방지용 임시 라이프사이클 참조
+
+	if (TargetRoadStaticMeshActor)
+	{
+		UStaticMeshComponent* SMComp = TargetRoadStaticMeshActor->GetStaticMeshComponent();
+		if (SMComp && SMComp->GetStaticMesh())
+		{
+			UStaticMesh* RoadSM = SMComp->GetStaticMesh();
+			TempRoadDynMesh = NewObject<UDynamicMesh>();
+			
+			FGeometryScriptCopyMeshFromAssetOptions CopyOptions;
+			FGeometryScriptMeshReadLOD TargetLOD;
+			TargetLOD.LODIndex = 0;
+			EGeometryScriptOutcomePins Outcome;
+
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+				RoadSM,
+				TempRoadDynMesh,
+				CopyOptions,
+				TargetLOD,
+				Outcome
+			);
+
+			if (Outcome == EGeometryScriptOutcomePins::Success)
+			{
+				RoadDynMesh = TempRoadDynMesh;
+				SnapTransform = TargetRoadStaticMeshActor->GetActorTransform();
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied static mesh '%s' for sidewalk snapping."), *RoadSM->GetName());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Failed to copy static mesh to temp dynamic mesh. Fallback to landscape."));
+			}
+		}
+	}
+	else if (OutputDynamicMeshActor)
+	{
+		UDynamicMeshComponent* DynMeshComp = OutputDynamicMeshActor->GetDynamicMeshComponent();
+		if (DynMeshComp)
+		{
+			RoadDynMesh = DynMeshComp->GetDynamicMesh();
+			SnapTransform = OutputDynamicMeshActor->GetActorTransform();
+		}
+	}
+
+	// 전체 메쉬에 누적될 글로벌 정점 및 소속 링크 정보 구조체
+	struct FGlobalVertexInfo
+	{
+		FVector Position;
+		FString SourceID;
+	};
+
+	TArray<FGlobalVertexInfo> GlobalVerticesInfo;
+	TArray<FIntVector> GlobalTriangles;
+
+	auto FindOrAddVertex = [&](const FVector& NewVert, float MaxDistance, const FString& CurrentLinkID) -> int32
+	{
+		for (int32 Index = 0; Index < GlobalVerticesInfo.Num(); ++Index)
+		{
+			if (FVector::DistXY(GlobalVerticesInfo[Index].Position, NewVert) <= MaxDistance)
+			{
+				if (FMath::Abs(GlobalVerticesInfo[Index].Position.Z - NewVert.Z) < 5.0f)
+				{
+					return Index;
+				}
+			}
+		}
+
+		FGlobalVertexInfo NewInfo;
+		NewInfo.Position = NewVert;
+		NewInfo.SourceID = CurrentLinkID;
+		return GlobalVerticesInfo.Add(NewInfo);
+	};
+
+	// 1. 다각형 데이터 경계 수집 (2D 결합을 위해 스냅은 보류하고 XY만 수집)
+	TArray<TArray<FVector>> PolyBoundaries;
+	TArray<FHDMapSidewalkRow*> PolyRows;
+
+	for (FHDMapSidewalkRow* DwRow : TargetRows)
+	{
+		if (!DwRow || DwRow->UFID.Equals(TEXT("ORIGIN")) || DwRow->Points.Num() < 3) continue;
+
+		TArray<FVector> LocalVertices;
+		LocalVertices.Reserve(DwRow->Points.Num());
+		for (const FVector& Pt : DwRow->Points)
+		{
+			FVector PtWorld = VisTransform.TransformPosition(Pt);
+			PtWorld.Z = 0.0f; // 2D 결합을 위해 일단 높이를 0으로 초기화
+			LocalVertices.Add(PtWorld);
+		}
+		PolyBoundaries.Add(MoveTemp(LocalVertices));
+		PolyRows.Add(DwRow);
+	}
+
+	// 2. 글로벌 경계 정점 병합 (Disjoint Set Weld - 2D 평면 결합, 원본 정점 대상)
+	struct FGlobalVertexRef
+	{
+		int32 PolyIdx;
+		int32 VertIdx;
+		FVector* ValuePtr;
+	};
+
+	TArray<FGlobalVertexRef> GlobalVerts;
+	for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+	{
+		for (int32 VertIdx = 0; VertIdx < PolyBoundaries[PolyIdx].Num(); ++VertIdx)
+		{
+			GlobalVerts.Add({ PolyIdx, VertIdx, &PolyBoundaries[PolyIdx][VertIdx] });
+		}
+	}
+
+	const int32 TotalVerts = GlobalVerts.Num();
+	if (TotalVerts > 0)
+	{
+		FDisjointSet DS(TotalVerts);
+		for (int32 i = 0; i < TotalVerts; ++i)
+		{
+			for (int32 j = i + 1; j < TotalVerts; ++j)
+			{
+				if (GlobalVerts[i].PolyIdx == GlobalVerts[j].PolyIdx) continue;
+
+				if (FVector::DistXY(*GlobalVerts[i].ValuePtr, *GlobalVerts[j].ValuePtr) < WeldDistance)
+				{
+					DS.Union(i, j);
+				}
+			}
+		}
+
+		TArray<FVector> GroupSum;
+		TArray<int32> GroupCount;
+		GroupSum.AddZeroed(TotalVerts);
+		GroupCount.AddZeroed(TotalVerts);
+
+		for (int32 i = 0; i < TotalVerts; ++i)
+		{
+			int32 Root = DS.Find(i);
+			GroupSum[Root] += *GlobalVerts[i].ValuePtr;
+			GroupCount[Root]++;
+		}
+
+		for (int32 i = 0; i < TotalVerts; ++i)
+		{
+			int32 Root = DS.Find(i);
+			FVector AvgPt = GroupSum[Root] / (float)GroupCount[Root];
+			*GlobalVerts[i].ValuePtr = AvgPt;
+		}
+	}
+
+	// 3. 경계 정점 중복 제거
+	for (TArray<FVector>& Boundary : PolyBoundaries)
+	{
+		for (int32 i = Boundary.Num() - 1; i > 0; --i)
+		{
+			if (FVector::DistXY(Boundary[i], Boundary[i - 1]) < WeldDistance)
+			{
+				Boundary.RemoveAt(i);
+			}
+		}
+		if (Boundary.Num() > 1 && FVector::DistXY(Boundary[0], Boundary.Last()) < WeldDistance)
+		{
+			Boundary.RemoveAt(Boundary.Num() - 1);
+		}
+	}
+
+	// 4. 에지 분할 (Edge Subdivision - Weld 및 중복 제거 완료 후 사후 분할)
+	if (EdgeSubdivisionCount > 1)
+	{
+		TArray<TArray<FVector>> SubdividedBoundaries;
+		SubdividedBoundaries.Reserve(PolyBoundaries.Num());
+		for (const TArray<FVector>& Boundary : PolyBoundaries)
+		{
+			TArray<FVector> NewBoundary;
+			const int32 NumPts = Boundary.Num();
+			if (NumPts < 3)
+			{
+				SubdividedBoundaries.Add(Boundary);
+				continue;
+			}
+			NewBoundary.Reserve(NumPts * EdgeSubdivisionCount);
+			for (int32 i = 0; i < NumPts; ++i)
+			{
+				const FVector& V0 = Boundary[i];
+				const FVector& V1 = Boundary[(i + 1) % NumPts];
+				NewBoundary.Add(V0);
+				for (int32 Step = 1; Step < EdgeSubdivisionCount; ++Step)
+				{
+					float T = (float)Step / (float)EdgeSubdivisionCount;
+					FVector SubdivPt = FMath::Lerp(V0, V1, T);
+					SubdivPt.Z = 0.0f;
+					NewBoundary.Add(SubdivPt);
+				}
+			}
+			SubdividedBoundaries.Add(MoveTemp(NewBoundary));
+		}
+		PolyBoundaries = MoveTemp(SubdividedBoundaries);
+	}
+
+	// 4.5) 2D 결합 및 분할 완료된 정점들을 지형 높이 및 도로 메쉬에 스냅 (틈새 및 파묻힘 원천 차단)
+	if (bSnapToLandscape)
+	{
+		for (TArray<FVector>& Boundary : PolyBoundaries)
+		{
+			for (FVector& Pt : Boundary)
+			{
+				float LandZ = GetLandscapeZ(Pt);
+				float SnapZ = GetRoadMeshZ(RoadDynMesh, FVector2D(Pt.X, Pt.Y), LandZ, SnapTransform);
+				Pt.Z = SnapZ;
+			}
+		}
+	}
+
+	// 4.6) 다각형 간 공유하는 에지 수집 및 판별 (수직 측벽 꼬임 해결)
+	auto GetEdgeKey = [](int32 V0, int32 V1) -> uint64
+	{
+		int32 MinV = FMath::Min(V0, V1);
+		int32 MaxV = FMath::Max(V0, V1);
+		return ((uint64)MinV << 32) | (uint32)MaxV;
+	};
+
+	TArray<TArray<int32>> PolyBottomIndices;
+	TArray<TArray<int32>> PolyTopIndices;
+	PolyBottomIndices.AddDefaulted(PolyBoundaries.Num());
+	PolyTopIndices.AddDefaulted(PolyBoundaries.Num());
+
+	// 정점 인덱스를 전 다각형에 대해 일괄적으로 미리 확보
+	for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+	{
+		TArray<FVector>& BoundaryPoints = PolyBoundaries[PolyIdx];
+		int32 BoundaryCount = BoundaryPoints.Num();
+
+		PolyBottomIndices[PolyIdx].AddUninitialized(BoundaryCount);
+		PolyTopIndices[PolyIdx].AddUninitialized(BoundaryCount);
+
+		FHDMapSidewalkRow* DwRow = PolyRows[PolyIdx];
+
+		for (int32 v = 0; v < BoundaryCount; ++v)
+		{
+			FVector BasePos = BoundaryPoints[v];
+			
+			FVector BottomPos = BasePos;
+			BottomPos.Z += SidewalkZOffset;
+			PolyBottomIndices[PolyIdx][v] = FindOrAddVertex(BottomPos, WeldDistance, DwRow->UFID);
+
+			FVector TopPos = BasePos;
+			TopPos.Z += (SidewalkZOffset + SidewalkHeight);
+			PolyTopIndices[PolyIdx][v] = FindOrAddVertex(TopPos, WeldDistance, DwRow->UFID);
+		}
+	}
+
+	// 에지별 출현 횟수 카운팅
+	TMap<uint64, int32> EdgeUsageMap;
+	for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+	{
+		int32 BoundaryCount = PolyBoundaries[PolyIdx].Num();
+		if (BoundaryCount < 3) continue;
+
+		const TArray<int32>& BottomIndices = PolyBottomIndices[PolyIdx];
+
+		for (int32 i = 0; i < BoundaryCount; ++i)
+		{
+			int32 next_i = (i + 1) % BoundaryCount;
+			int32 B0 = BottomIndices[i];
+			int32 B1 = BottomIndices[next_i];
+
+			uint64 EdgeKey = GetEdgeKey(B0, B1);
+			EdgeUsageMap.FindOrAdd(EdgeKey, 0)++;
+		}
+	}
+
+	// 5. 각 다각형별 메쉬 생성
+	for (int32 PolyIdx = 0; PolyIdx < PolyBoundaries.Num(); ++PolyIdx)
+	{
+		TArray<FVector>& BoundaryPoints = PolyBoundaries[PolyIdx];
+		if (BoundaryPoints.Num() < 3) continue;
+
+		FHDMapSidewalkRow* DwRow = PolyRows[PolyIdx];
+		TArray<FVector> SyncBoundary = BoundaryPoints;
+		int32 BoundaryCount = SyncBoundary.Num();
+
+		const TArray<int32>& BottomGlobalIndices = PolyBottomIndices[PolyIdx];
+		const TArray<int32>& TopGlobalIndices = PolyTopIndices[PolyIdx];
+
+		// 5.2) 그리드 세분화 (Grid Refinement)
+		TArray<FVector> RefinedVertices = SyncBoundary;
+		if (bSnapToLandscape && bEnableSidewalkGridRefinement && DwRow->Points.Num() >= 3)
+		{
+			FBox2D PolyBox(EForceInit::ForceInit);
+			for (const FVector& Pt : DwRow->Points)
+			{
+				PolyBox += FVector2D(Pt.X, Pt.Y);
+			}
+
+			float LocalGridSpacing = FMath::Max(50.f, SidewalkGridSpacing);
+
+			for (float GridX = PolyBox.Min.X + LocalGridSpacing; GridX < PolyBox.Max.X; GridX += LocalGridSpacing)
+			{
+				for (float GridY = PolyBox.Min.Y + LocalGridSpacing; GridY < PolyBox.Max.Y; GridY += LocalGridSpacing)
+				{
+					FVector2D TestPt(GridX, GridY);
+					if (IsPointInPolygon2D(TestPt, DwRow->Points))
+					{
+						FVector PtLocal(GridX, GridY, 0.f);
+						FVector PtWorld = VisTransform.TransformPosition(PtLocal);
+						
+						float LandZ = GetLandscapeZ(PtWorld);
+						float SnapZ = GetRoadMeshZ(RoadDynMesh, FVector2D(PtWorld.X, PtWorld.Y), LandZ, SnapTransform);
+						PtWorld.Z = SnapZ;
+
+						RefinedVertices.Add(PtWorld);
+					}
+				}
+			}
+		}
+
+		if (RefinedVertices.Num() < 3) continue;
+
+		// 5.3) 상판(Top Face) 델로네 삼각분할
+		TArray<FIntVector> RawTriangles;
+		if (RunDelaunayTriangulation(RefinedVertices, RawTriangles))
+		{
+			TArray<int32> DelaunayGlobalIndices;
+			DelaunayGlobalIndices.AddUninitialized(RefinedVertices.Num());
+			
+			// 경계 정점들은 이미 캐싱된 상판 인덱스를 매칭
+			for (int32 v = 0; v < BoundaryCount; ++v)
+			{
+				DelaunayGlobalIndices[v] = TopGlobalIndices[v];
+			}
+			// 내부 그리드 정점들은 새로이 FindOrAddVertex 수행
+			for (int32 v = BoundaryCount; v < RefinedVertices.Num(); ++v)
+			{
+				FVector TopPos = RefinedVertices[v];
+				TopPos.Z += (SidewalkZOffset + SidewalkHeight);
+				DelaunayGlobalIndices[v] = FindOrAddVertex(TopPos, WeldDistance, DwRow->UFID);
+			}
+
+			for (const FIntVector& Tri : RawTriangles)
+			{
+				FVector V0 = RefinedVertices[Tri.X];
+				FVector V1 = RefinedVertices[Tri.Y];
+				FVector V2 = RefinedVertices[Tri.Z];
+
+				FVector Centroid = (V0 + V1 + V2) / 3.0f;
+				FVector2D Centroid2D(Centroid.X, Centroid.Y);
+
+				if (IsPointInPolygon2D(Centroid2D, SyncBoundary))
+				{
+					FVector E0 = V1 - V0;
+					FVector E1 = V2 - V0;
+					FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+					int32 FinalY = Tri.Y;
+					int32 FinalZ = Tri.Z;
+					if (CrossVal.Z > 0.f)
+					{
+						FinalY = Tri.Z;
+						FinalZ = Tri.Y;
+					}
+
+					int32 G_X = DelaunayGlobalIndices[Tri.X];
+					int32 G_Y = DelaunayGlobalIndices[FinalY];
+					int32 G_Z = DelaunayGlobalIndices[FinalZ];
+
+					if (G_X != G_Y && G_Y != G_Z && G_Z != G_X)
+					{
+						GlobalTriangles.Add(FIntVector(G_X, G_Y, G_Z));
+					}
+				}
+			}
+		}
+
+		// 5.4) 측벽(Side Wall) 생성 (1:1 정렬된 매칭 인덱스 상속)
+		if (BoundaryCount >= 3)
+		{
+			for (int32 i = 0; i < BoundaryCount; ++i)
+			{
+				int32 next_i = (i + 1) % BoundaryCount;
+
+				int32 B0 = BottomGlobalIndices[i];
+				int32 B1 = BottomGlobalIndices[next_i];
+				int32 T0 = TopGlobalIndices[i];
+				int32 T1 = TopGlobalIndices[next_i];
+
+				// 공유 에지 필터링 (맞닿은 이웃 다각형이 공유하는 내부 경계는 측벽 생성을 제외)
+				uint64 EdgeKey = GetEdgeKey(B0, B1);
+				if (EdgeUsageMap.FindRef(EdgeKey) > 1)
+				{
+					continue;
+				}
+
+				if (B0 != B1 && B1 != T1 && T1 != B0)
+				{
+					GlobalTriangles.Add(FIntVector(B0, B1, T1));
+				}
+				if (B0 != T1 && T1 != T0 && T0 != B0)
+				{
+					GlobalTriangles.Add(FIntVector(B0, T1, T0));
+				}
+			}
+		}
+	}
+
+	if (GlobalVerticesInfo.Num() < 3 || GlobalTriangles.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Failed to generate sidewalk vertices or triangles. Vertices: %d, Triangles: %d"), GlobalVerticesInfo.Num(), GlobalTriangles.Num());
+		return;
+	}
+
+	// 6. DynamicMesh 컴포넌트에 최종 지오메트리 빌드
+	UDynamicMeshComponent* DynMeshComp = OutputSidewalkDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] OutputSidewalkDynamicMeshActor does not have a DynamicMeshComponent."));
+		return;
+	}
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+
+	UE::Geometry::FDynamicMesh3 NativeMesh;
+	NativeMesh.EnableAttributes();
+
+	TArray<int32> VertexIDs;
+	for (const FGlobalVertexInfo& VInfo : GlobalVerticesInfo)
+	{
+		int32 VId = NativeMesh.AppendVertex(VInfo.Position);
+		VertexIDs.Add(VId);
+	}
+
+	for (const FIntVector& Tri : GlobalTriangles)
+	{
+		NativeMesh.AppendTriangle(VertexIDs[Tri.X], VertexIDs[Tri.Y], VertexIDs[Tri.Z]);
+	}
+
+	DynMesh->SetMesh(MoveTemp(NativeMesh));
+	DynMeshComp->NotifyMeshUpdated();
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Sidewalk 3D mesh generated successfully! Vertices: %d, Triangles: %d"),
+		GlobalVerticesInfo.Num(), GlobalTriangles.Num());
+}
+
+void AHDMapMeshGenerator::SaveSidewalkToStaticMeshAsset()
+{
+	if (!OutputSidewalkDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: OutputSidewalkDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputSidewalkDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh || DynMesh->IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: DynamicMesh is empty. Please generate sidewalk mesh first."));
+		return;
+	}
+
+	if (SaveSidewalkAssetPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SaveSidewalkAssetPath is empty. Please define a path like /Game/Roads/SM_MySidewalk."));
+		return;
+	}
+
+	FString PackagePath = SaveSidewalkAssetPath;
+	FString AssetName;
+	int32 LastSlashIndex;
+	if (PackagePath.FindLastChar('/', LastSlashIndex))
+	{
+		AssetName = PackagePath.RightChop(LastSlashIndex + 1);
+	}
+	else
+	{
+		AssetName = PackagePath;
+		PackagePath = TEXT("/Game/") + AssetName;
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create package at %s"), *PackagePath);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* TargetStaticMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, *PackagePath));
+	if (!TargetStaticMesh)
+	{
+		TargetStaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!TargetStaticMesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create or load StaticMesh object."));
+		return;
+	}
+
+	FGeometryScriptCopyMeshToAssetOptions CopyOptions;
+	CopyOptions.bEnableRecomputeNormals = true;
+	CopyOptions.bEnableRecomputeTangents = true;
+	CopyOptions.bEnableRemoveDegenerates = true;
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+
+	EGeometryScriptOutcomePins Outcome;
+	
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+		DynMesh,
+		TargetStaticMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		FAssetRegistryModule::AssetCreated(TargetStaticMesh);
+		TargetStaticMesh->MarkPackageDirty();
+		
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied and saved StaticMesh Asset at: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
+}
+
+static bool GetBarycentricCoords2D(const FVector2D& P, const FVector2D& A, const FVector2D& B, const FVector2D& C, float& OutU, float& OutV, float& OutW)
+{
+	FVector2D v0 = B - A;
+	FVector2D v1 = C - A;
+	FVector2D v2 = P - A;
+
+	float den = v0.X * v1.Y - v1.X * v0.Y;
+	if (FMath::Abs(den) < 1e-6f) return false;
+
+	float v = (v2.X * v1.Y - v1.X * v2.Y) / den;
+	float w = (v0.X * v2.Y - v2.X * v0.Y) / den;
+	float u = 1.0f - v - w;
+
+	OutU = u;
+	OutV = v;
+	OutW = w;
+
+	// 경계선 오차 방지: 외측 5% 마진 허용 (-0.05 ~ 1.05)
+	return (u >= -0.05f && v >= -0.05f && w >= -0.05f && u <= 1.05f && v <= 1.05f && w <= 1.05f);
+}
+
+float AHDMapMeshGenerator::GetRoadMeshZ(UDynamicMesh* RoadDynMesh, const FVector2D& Pt, float FallbackZ, const FTransform& ActorTransform)
+{
+	if (!RoadDynMesh || RoadDynMesh->IsEmpty()) return FallbackZ;
+
+	float BestZ = -FLT_MAX;
+	float MinZDiff = FLT_MAX;
+	bool bFound = false;
+
+	RoadDynMesh->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh)
+	{
+		for (int32 TriID : Mesh.TriangleIndicesItr())
+		{
+			UE::Geometry::FIndex3i Tri = Mesh.GetTriangle(TriID);
+			FVector A_Local = Mesh.GetVertex(Tri.A);
+			FVector B_Local = Mesh.GetVertex(Tri.B);
+			FVector C_Local = Mesh.GetVertex(Tri.C);
+
+			// 월드 좌표계 변환
+			FVector A = ActorTransform.TransformPosition(A_Local);
+			FVector B = ActorTransform.TransformPosition(B_Local);
+			FVector C = ActorTransform.TransformPosition(C_Local);
+
+			float MinX = FMath::Min3(A.X, B.X, C.X);
+			float MaxX = FMath::Max3(A.X, B.X, C.X);
+			float MinY = FMath::Min3(A.Y, B.Y, C.Y);
+			float MaxY = FMath::Max3(A.Y, B.Y, C.Y);
+
+			// 바운딩 박스 검사에도 여유 마진 적용 (50cm)
+			const float Margin = 50.f;
+			if (Pt.X < MinX - Margin || Pt.X > MaxX + Margin || Pt.Y < MinY - Margin || Pt.Y > MaxY + Margin)
+			{
+				continue;
+			}
+
+			float U, V, W;
+			if (GetBarycentricCoords2D(Pt, FVector2D(A.X, A.Y), FVector2D(B.X, B.Y), FVector2D(C.X, C.Y), U, V, W))
+			{
+				float TriZ = U * A.Z + V * B.Z + W * C.Z;
+				if (TriZ > BestZ)
+				{
+					BestZ = TriZ;
+					bFound = true;
+				}
+			}
+		}
+	});
+
+	return bFound ? BestZ : FallbackZ;
+}
+
+void AHDMapMeshGenerator::GenerateLaneMesh()
+{
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is not specified."));
+		return;
+	}
+
+	if (!OutputLaneDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] OutputLaneDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDataTable* LaneTable = VisualizerActor->DT_B2_Lane;
+	if (!LaneTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] DT_B2_Lane is not mapped in visualizer."));
+		return;
+	}
+
+	// DynamicMeshComponent 및 DynamicMesh 준비
+	UDynamicMeshComponent* DynMeshComp = OutputLaneDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] OutputLaneDynamicMeshActor does not have a DynamicMeshComponent."));
+		return;
+	}
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+
+	// 컴포넌트 머티리얼 세팅
+	DynMeshComp->SetMaterial(0, WhiteMaterial);
+	DynMeshComp->SetMaterial(1, YellowMaterial);
+	DynMeshComp->SetMaterial(2, BlueMaterial);
+
+	// 출력 Dynamic Mesh Actor 트랜스폼 Identity
+	OutputLaneDynamicMeshActor->SetActorTransform(FTransform::Identity);
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	// 도로 스냅을 위한 타겟 도로 메쉬 획득
+	UDynamicMesh* RoadDynMesh = nullptr;
+	FTransform RoadTransform = FTransform::Identity;
+	UDynamicMesh* TempRoadDynMesh = nullptr; // GC 방지용 임시 라이프사이클 참조
+
+	if (TargetRoadStaticMeshActor)
+	{
+		UStaticMeshComponent* SMComp = TargetRoadStaticMeshActor->GetStaticMeshComponent();
+		if (SMComp && SMComp->GetStaticMesh())
+		{
+			UStaticMesh* RoadSM = SMComp->GetStaticMesh();
+			TempRoadDynMesh = NewObject<UDynamicMesh>();
+			
+			FGeometryScriptCopyMeshFromAssetOptions CopyOptions;
+			FGeometryScriptMeshReadLOD TargetLOD;
+			TargetLOD.LODIndex = 0;
+			EGeometryScriptOutcomePins Outcome;
+
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+				RoadSM,
+				TempRoadDynMesh,
+				CopyOptions,
+				TargetLOD,
+				Outcome
+			);
+
+			if (Outcome == EGeometryScriptOutcomePins::Success)
+			{
+				RoadDynMesh = TempRoadDynMesh;
+				RoadTransform = TargetRoadStaticMeshActor->GetActorTransform();
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied static mesh '%s' for lane snapping."), *RoadSM->GetName());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Failed to copy static mesh to temp dynamic mesh for lane snapping. Fallback to landscape."));
+			}
+		}
+	}
+	else if (OutputDynamicMeshActor)
+	{
+		UDynamicMeshComponent* RoadDynMeshComp = OutputDynamicMeshActor->GetDynamicMeshComponent();
+		if (RoadDynMeshComp)
+		{
+			RoadDynMesh = RoadDynMeshComp->GetDynamicMesh();
+			RoadTransform = OutputDynamicMeshActor->GetActorTransform();
+		}
+	}
+
+	// Native Mesh 생성용
+	UE::Geometry::FDynamicMesh3 NativeMesh;
+	NativeMesh.EnableAttributes();
+	
+	// 머티리얼 속성이 없으면 활성화
+	if (!NativeMesh.Attributes()->GetMaterialID())
+	{
+		NativeMesh.Attributes()->EnableMaterialID();
+	}
+	auto* MaterialIDs = NativeMesh.Attributes()->GetMaterialID();
+
+	TArray<FHDMapB2LaneRow*> TargetRows;
+	LaneTable->GetAllRows<FHDMapB2LaneRow>(TEXT("HDMapMeshGen_AllB2Search"), TargetRows);
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Generating Lane Mesh for %d lanes..."), TargetRows.Num());
+
+	// 포인트 리샘플링 헬퍼 람다
+	auto ResamplePoints = [](const TArray<FVector>& OriginalPoints, float SampleDist, TArray<FVector>& OutResampled)
+	{
+		if (OriginalPoints.Num() < 2) return;
+
+		OutResampled.Add(OriginalPoints[0]);
+		float AccumulatedDistance = 0.f;
+		float TargetDistance = SampleDist;
+
+		for (int32 idx = 0; idx < OriginalPoints.Num() - 1; ++idx)
+		{
+			FVector P0 = OriginalPoints[idx];
+			FVector P1 = OriginalPoints[idx + 1];
+			float SegmentLen = FVector::Dist(P0, P1);
+
+			while (AccumulatedDistance + SegmentLen >= TargetDistance)
+			{
+				float Ratio = (TargetDistance - AccumulatedDistance) / SegmentLen;
+				FVector InterpolatedPt = FMath::Lerp(P0, P1, Ratio);
+				OutResampled.Add(InterpolatedPt);
+				TargetDistance += SampleDist;
+			}
+
+			AccumulatedDistance += SegmentLen;
+		}
+
+		if (FVector::Dist(OutResampled.Last(), OriginalPoints.Last()) > SampleDist * 0.1f)
+		{
+			OutResampled.Add(OriginalPoints.Last());
+		}
+	};
+
+	// 각 개별 선 조각(Ribbon Strip)을 그리는 헬퍼 람다
+	auto GenerateLaneStrip = [&](const TArray<FVector>& PathPoints, float StartOffset, float EndOffset, bool bDashed, float SolidLength, float SpaceLength, int32 MaterialID)
+	{
+		if (PathPoints.Num() < 2) return;
+
+		float AccumulatedDistance = 0.f;
+		float Period = SolidLength + SpaceLength;
+
+		bool bLastWasSolid = false;
+		int32 LastVIndexLeft = -1;
+		int32 LastVIndexRight = -1;
+
+		for (int32 i = 0; i < PathPoints.Num(); ++i)
+		{
+			FVector Curr = PathPoints[i];
+			FVector Dir = FVector::ForwardVector;
+
+			if (i < PathPoints.Num() - 1)
+			{
+				Dir = (PathPoints[i + 1] - Curr).GetSafeNormal2D();
+			}
+			else if (i > 0)
+			{
+				Dir = (Curr - PathPoints[i - 1]).GetSafeNormal2D();
+			}
+
+			FVector RightVec = FVector::CrossProduct(Dir, FVector::UpVector).GetSafeNormal2D();
+
+			// 현재 지점까지의 거리 누적
+			if (i > 0)
+			{
+				AccumulatedDistance += FVector::Dist(PathPoints[i], PathPoints[i - 1]);
+			}
+
+			// 점선 구간 검사
+			bool bIsSolid = true;
+			if (bDashed && Period > 0.0f)
+			{
+				float DistInPeriod = fmod(AccumulatedDistance, Period);
+				bIsSolid = (DistInPeriod < SolidLength);
+			}
+
+			if (!bIsSolid)
+			{
+				bLastWasSolid = false;
+				LastVIndexLeft = -1;
+				LastVIndexRight = -1;
+				continue;
+			}
+
+			// 정점 2개 (좌, 우) 생성
+			FVector PtLeft = Curr + RightVec * StartOffset;
+			FVector PtRight = Curr + RightVec * EndOffset;
+
+			// Z 고도 정합 (월드 물리 레이캐스트 우선 ➡️ 도로 다이내믹 메쉬 ➡️ 지형 ➡️ 원본 순)
+			auto AdjustZ = [&](FVector& Pt)
+			{
+				float TargetZ = Pt.Z;
+				bool bSnapped = false;
+
+				// 1) 월드 정밀 물리 레이캐스트 (컴플렉스 콜리전 레이트레이싱)
+				UWorld* World = GetWorld();
+				if (World)
+				{
+					// 원본 Z 좌표보다 위아래 50m 범위로 수직 광선을 투사
+					FVector Start = FVector(Pt.X, Pt.Y, Pt.Z + 5000.f);
+					FVector End = FVector(Pt.X, Pt.Y, Pt.Z - 5000.f);
+
+					FHitResult HitResult;
+					FCollisionQueryParams CollisionParams;
+					CollisionParams.bTraceComplex = true; // 단순 콜리전 박스가 아닌 실제 삼각 렌더 폴리곤 표면 타겟팅
+					CollisionParams.AddIgnoredActor(this);
+					if (OutputLaneDynamicMeshActor)
+					{
+						CollisionParams.AddIgnoredActor(OutputLaneDynamicMeshActor);
+					}
+
+					// 가시성(Visibility) 채널로 레이캐스트하여 가장 위에 부딪힌 표면 획득
+					if (World->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams))
+					{
+						AActor* HitActor = HitResult.GetActor();
+						bool bIsTargetRoad = false;
+
+						if (TargetRoadStaticMeshActor && HitActor == TargetRoadStaticMeshActor)
+						{
+							bIsTargetRoad = true;
+						}
+						else if (OutputDynamicMeshActor && HitActor == OutputDynamicMeshActor)
+						{
+							bIsTargetRoad = true;
+						}
+
+						// 명시적으로 지정한 타겟 도로 메시만 스냅 대상으로 허용
+						if (bIsTargetRoad)
+						{
+							TargetZ = HitResult.ImpactPoint.Z;
+							bSnapped = true;
+						}
+					}
+				}
+
+				// 2) 레이캐스트 실패 시 로컬 도로 메쉬 수학 보간 시도
+				if (!bSnapped && RoadDynMesh)
+				{
+					float RoadZ = GetRoadMeshZ(RoadDynMesh, FVector2D(Pt.X, Pt.Y), -99999.0f, RoadTransform);
+					if (RoadZ > -99000.0f)
+					{
+						TargetZ = RoadZ;
+						bSnapped = true;
+					}
+				}
+
+				// 3) 지형(Landscape) 스냅 Fallback
+				if (!bSnapped && bSnapToLandscape)
+				{
+					float LandZ = GetLandscapeZ(Pt);
+					TargetZ = LandZ;
+					bSnapped = true;
+				}
+
+				Pt.Z = TargetZ + LaneMarkZOffset;
+			};
+
+			AdjustZ(PtLeft);
+			AdjustZ(PtRight);
+
+			int32 VLeft = NativeMesh.AppendVertex(PtLeft);
+			int32 VRight = NativeMesh.AppendVertex(PtRight);
+
+			// 만약 이전 구간이 실선이었고 현재도 실선이면 사각형(삼각형 2개) 연결
+			if (bLastWasSolid && LastVIndexLeft != -1 && LastVIndexRight != -1)
+			{
+				int32 T1 = NativeMesh.AppendTriangle(LastVIndexLeft, VLeft, VRight);
+				int32 T2 = NativeMesh.AppendTriangle(LastVIndexLeft, VRight, LastVIndexRight);
+
+				if (MaterialIDs)
+				{
+					if (T1 >= 0) MaterialIDs->SetValue(T1, MaterialID);
+					if (T2 >= 0) MaterialIDs->SetValue(T2, MaterialID);
+				}
+			}
+
+			bLastWasSolid = true;
+			LastVIndexLeft = VLeft;
+			LastVIndexRight = VRight;
+		}
+	};
+
+	for (FHDMapB2LaneRow* Row : TargetRows)
+	{
+		if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 2) continue;
+
+		// 1. 월드 트랜스폼으로 변환
+		TArray<FVector> WorldPoints;
+		WorldPoints.Reserve(Row->Points.Num());
+		for (const FVector& Pt : Row->Points)
+		{
+			WorldPoints.Add(VisTransform.TransformPosition(Pt));
+		}
+
+		// 유도선 판정: Kind가 525이거나, Kind가 515(황색선군)이면서 LaneType이 112(황색점선)인 경우
+		bool bIsGuideLine = Row->Kind.Equals(TEXT("525")) || (Row->Kind.Equals(TEXT("515")) && Row->LaneType.Equals(TEXT("112")));
+
+		// 2. 곡선 부드럽게 만들기 위해 리샘플링
+		float SampleDist = LaneSampleDistance;
+		if (bIsGuideLine) // 유도선
+		{
+			SampleDist = 20.f; // 1m 점선 조각을 정상적으로 복원하기 위해 20cm 간격으로 매우 조밀하게 샘플링
+		}
+
+		TArray<FVector> ResampledPoints;
+		ResamplePoints(WorldPoints, SampleDist, ResampledPoints);
+
+		if (ResampledPoints.Num() < 2) continue;
+
+		// 3. LaneType 분류
+		FString TypeStr = Row->LaneType;
+		if (TypeStr.IsEmpty()) TypeStr = TEXT("211"); // 기본값 백색 실선
+
+		TCHAR ColorChar = TypeStr.Len() > 0 ? TypeStr[0] : '2';
+		TCHAR PatternChar = TypeStr.Len() > 2 ? TypeStr[2] : '1';
+
+		// 유도선인 경우, 실선 코드로 들어왔더라도 강제로 단선 점선('2')으로 취급합니다.
+		if (bIsGuideLine)
+		{
+			PatternChar = '2';
+		}
+
+		// 머티리얼 인덱스 (0: 백색, 1: 황색, 2: 청색)
+		int32 MatID = 0;
+		if (ColorChar == '1') MatID = 1;      // 황색
+		else if (ColorChar == '3') MatID = 2; // 청색
+
+		// 점선 간격 결정 (기본값 또는 유도선 스펙)
+		float SolidLen = LaneDashedSolidLength;
+		float SpaceLen = LaneDashedSpaceLength;
+
+		if (bIsGuideLine) // 유도선
+		{
+			SolidLen = 100.f; // 1m
+			SpaceLen = 100.f; // 1m
+		}
+		else
+		{
+			// 그 외 일반 점선 (3m 생성, 5m 공백)
+			SolidLen = 300.f; // 3m
+			SpaceLen = 500.f; // 5m
+		}
+
+		// 패턴에 맞게 빌드
+		// '1': 실선, '2': 점선, '3': 복실선, '4': 복점선, '5': 좌점우실(좌점흔선), '6': 우점좌실(우점흔선)
+		if (PatternChar == '1') // 단실선
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkWidth / 2.0f, LaneMarkWidth / 2.0f, false, SolidLen, SpaceLen, MatID);
+		}
+		else if (PatternChar == '2') // 단점선
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkWidth / 2.0f, LaneMarkWidth / 2.0f, true, SolidLen, SpaceLen, MatID);
+		}
+		else if (PatternChar == '3') // 복실선
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkGap / 2.0f - LaneMarkWidth, -LaneMarkGap / 2.0f, false, SolidLen, SpaceLen, MatID);
+			GenerateLaneStrip(ResampledPoints, LaneMarkGap / 2.0f, LaneMarkGap / 2.0f + LaneMarkWidth, false, SolidLen, SpaceLen, MatID);
+		}
+		else if (PatternChar == '4') // 복점선
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkGap / 2.0f - LaneMarkWidth, -LaneMarkGap / 2.0f, true, SolidLen, SpaceLen, MatID);
+			GenerateLaneStrip(ResampledPoints, LaneMarkGap / 2.0f, LaneMarkGap / 2.0f + LaneMarkWidth, true, SolidLen, SpaceLen, MatID);
+		}
+		else if (PatternChar == '5') // 좌점우실
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkGap / 2.0f - LaneMarkWidth, -LaneMarkGap / 2.0f, true, SolidLen, SpaceLen, MatID);
+			GenerateLaneStrip(ResampledPoints, LaneMarkGap / 2.0f, LaneMarkGap / 2.0f + LaneMarkWidth, false, SolidLen, SpaceLen, MatID);
+		}
+		else if (PatternChar == '6') // 우점좌실
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkGap / 2.0f - LaneMarkWidth, -LaneMarkGap / 2.0f, false, SolidLen, SpaceLen, MatID);
+			GenerateLaneStrip(ResampledPoints, LaneMarkGap / 2.0f, LaneMarkGap / 2.0f + LaneMarkWidth, true, SolidLen, SpaceLen, MatID);
+		}
+		else
+		{
+			GenerateLaneStrip(ResampledPoints, -LaneMarkWidth / 2.0f, LaneMarkWidth / 2.0f, false, SolidLen, SpaceLen, MatID);
+		}
+	}
+
+	int32 FinalVertexCount = NativeMesh.VertexCount();
+	int32 FinalTriangleCount = NativeMesh.TriangleCount();
+
+	// 최종 메쉬 적용 및 업데이트 알림
+	DynMesh->SetMesh(MoveTemp(NativeMesh));
+	DynMeshComp->NotifyMeshUpdated();
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Lane Mesh Generation Completed. Vertices: %d, Triangles: %d"),
+		FinalVertexCount, FinalTriangleCount);
+}
+
+void AHDMapMeshGenerator::SaveLaneToStaticMeshAsset()
+{
+	if (!OutputLaneDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: OutputLaneDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputLaneDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh || DynMesh->IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: DynamicMesh is empty. Please generate lane mesh first."));
+		return;
+	}
+
+	if (SaveLaneAssetPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SaveLaneAssetPath is empty. Please define a path like /Game/HDMap/SM_NamsanLane."));
+		return;
+	}
+
+	FString PackagePath = SaveLaneAssetPath;
+	FString AssetName;
+	int32 LastSlashIndex;
+	if (PackagePath.FindLastChar('/', LastSlashIndex))
+	{
+		AssetName = PackagePath.RightChop(LastSlashIndex + 1);
+	}
+	else
+	{
+		AssetName = PackagePath;
+		PackagePath = TEXT("/Game/") + AssetName;
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create package at %s"), *PackagePath);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* TargetStaticMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, *PackagePath));
+	if (!TargetStaticMesh)
+	{
+		TargetStaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!TargetStaticMesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create or load StaticMesh object."));
+		return;
+	}
+
+	// DynamicMesh에 바인딩된 머티리얼 목록을 StaticMesh 에셋에 할당
+	TargetStaticMesh->GetStaticMaterials().Empty();
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(WhiteMaterial, TEXT("WhiteMaterial")));
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(YellowMaterial, TEXT("YellowMaterial")));
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(BlueMaterial, TEXT("BlueMaterial")));
+
+	FGeometryScriptCopyMeshToAssetOptions CopyOptions;
+	CopyOptions.bEnableRecomputeNormals = true;
+	CopyOptions.bEnableRecomputeTangents = true;
+	CopyOptions.bEnableRemoveDegenerates = true;
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+
+	EGeometryScriptOutcomePins Outcome;
+	
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+		DynMesh,
+		TargetStaticMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		FAssetRegistryModule::AssetCreated(TargetStaticMesh);
+		TargetStaticMesh->MarkPackageDirty();
+		
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied and saved StaticMesh Asset at: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
 }

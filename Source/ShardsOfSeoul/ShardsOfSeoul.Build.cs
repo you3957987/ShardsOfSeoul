@@ -28,6 +28,11 @@ public class ShardsOfSeoul : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] { "LandscapeEditor", "Foliage" });
+		}
+
 		PublicIncludePaths.AddRange(new string[] {
 			"ShardsOfSeoul",
 			"ShardsOfSeoul/Variant_Platforming",

@@ -42,6 +42,9 @@ public:
 	UDataTable* DT_A4_Subsidiary;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Data")
+	UDataTable* DT_Sidewalk;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Data")
 	UDataTable* DT_B2_Lane;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Data")

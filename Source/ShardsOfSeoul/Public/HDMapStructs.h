@@ -257,3 +257,22 @@ public:
 	FHDMapC6PostRow() : ID(TEXT("")), PostType(TEXT("")) {}
 };
 
+/** 인도 병합 레이어 구조체 (ID, UFID, Points) */
+USTRUCT(BlueprintType)
+struct FHDMapSidewalkRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString ID;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString UFID;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	TArray<FVector> Points;
+
+	FHDMapSidewalkRow() : ID(TEXT("")), UFID(TEXT("")) {}
+};
+
