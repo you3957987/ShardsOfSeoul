@@ -39,3 +39,7 @@ GIS_Raw/
 *.pyc
 __pycache__/
 Python/
+
+# Local Private Assets
+Content/PrivateAssets/
+
