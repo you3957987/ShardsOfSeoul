@@ -135,8 +135,6 @@ public:
 	// 애님 노티파이에서 호출할 함수
 	UFUNCTION( BlueprintCallable )
 	void TeleportMoveToNextPoint();
-	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
-	class UParticleSystem* TeleportOutEffect;
 	UFUNCTION(BlueprintCallable)
 	void StartDisappear();
 	void EndDisappear();
@@ -160,6 +158,42 @@ public:
 	TSubclassOf<class ABaseEnemyProjectile> MagicBallProjectileClass;
 	UFUNCTION(BlueprintCallable)
 	void ShootMagickBall();
+	
+	// 특수 패턴 수행할 체력 비율 0 ~ 1
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	float ChangeMapHealthThreshold = 0.5f;
+	void StartChangeMapPattern();
+	bool bIsChangeMap = false;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	UAnimMontage* ChangeMapMontage;
+	UAnimMontage* PlayChangeMapMontage();
+	// 캐릭터 빨아들이는 거 플래그
+	UPROPERTY(BlueprintReadWrite, Category = "자체설정")
+	bool HandleCharacterTeleportFlag = false;
+	
+	UFUNCTION(BlueprintCallable)
+	void StartDisappearCharacter();
+	void EndDisappearCharacter();
+	FTimerHandle CharacterTeleportTimerHandle;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	class UParticleSystem* CharacterTeleportInEffect;
+	UFUNCTION(BlueprintCallable)
+	void PlayCharacterTeleportInEffect();
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TObjectPtr<class ATargetPoint> HechiTeleportPoint;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TObjectPtr<class ATargetPoint> CharacterTeleportPoint;
+	// 블루프린트 이벤트 그래프에 쓸 커스텀 이벤트
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
+	void ChangeMap();
+	UFUNCTION(BlueprintCallable)
+	void DisablePlayerInput();
+	UFUNCTION(BlueprintCallable)
+	void EnablePlayerInput();
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	class UNiagaraSystem* CharacterTeleportReadyEffect;
+	UFUNCTION(BlueprintCallable)
+	void PlayCharacterTeleportReadyEffect();
 	
 #if WITH_EDITOR
 	// 에디터에서 프로퍼티가 변경될 때 호출됩니다.

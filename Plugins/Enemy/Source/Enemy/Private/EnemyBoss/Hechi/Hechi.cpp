@@ -39,7 +39,24 @@ void AHechi::Tick(float DeltaTime)
 float AHechi::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator,
 	AActor* DamageCauser)
 {
-	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	float ActualDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+
+	// 3. 체력 비율 체크를 통한 2페이즈(특수 패턴) 진입 로직
+	if (Health > 0.f && bIsChangeMap == false)
+	{
+		// 현재 체력 비율 계산 (MaxHealth가 0이 아님을 전제)
+		float CurrentHealthRatio = Health / MaxHealth;
+
+		if (CurrentHealthRatio <= ChangeMapHealthThreshold)
+		{
+			bIsChangeMap = true; // 중복 실행 방지
+			
+			// 블랙보드 값 업데이트 (StartSecondPhase 함수 호출)
+			StartChangeMapPattern(); 
+		}
+	}
+	
+	return ActualDamage;
 }
 
 void AHechi::Die()
@@ -489,6 +506,169 @@ void AHechi::ShootMagickBall()
 
 	// 월드에 발사체를 스폰합니다.
 	GetWorld()->SpawnActor<ABaseEnemyProjectile>(MagicBallProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
+}
+
+void AHechi::StartChangeMapPattern()
+{
+	if ( BlackboardComp == nullptr ) return;
+	
+	BlackboardComp->SetValueAsBool("ChangeMap", true);
+}
+
+UAnimMontage* AHechi::PlayChangeMapMontage()
+{	
+	if ( ChangeMapMontage )
+	{
+		PlayAnimMontage(ChangeMapMontage);
+		return ChangeMapMontage;
+	}
+	return nullptr;
+}
+
+void AHechi::StartDisappearCharacter()
+{
+	HandleCharacterTeleportFlag = true;
+	
+	// 만약 기존에 돌고 있던 타이머가 있다면 초기화 (안전장치)
+	GetWorldTimerManager().ClearTimer(CharacterTeleportTimerHandle);
+	
+	// 3. 타이머 세팅: Duration 초 후에 EndDisappear 함수를 '한 번만' 실행합니다.
+	GetWorldTimerManager().SetTimer(
+		CharacterTeleportTimerHandle, 
+		this, 
+		&AHechi::EndDisappearCharacter, 
+		5.5f, 
+		false // 반복 여부 (false = 1회성)
+	);
+}
+
+void AHechi::EndDisappearCharacter()
+{
+	HandleCharacterTeleportFlag = false;
+}
+
+void AHechi::PlayCharacterTeleportInEffect()
+{
+	if ( TargetCharacter && CharacterTeleportInEffect )
+	{
+		// 타깃 캐릭터의 현재 월드 위치 가져오기
+		FVector SpawnLocation = TargetCharacter->GetActorLocation();
+		FRotator SpawnRotation = TargetCharacter->GetActorRotation();
+		
+		// 캡슐 컴포넌트의 Half Height(절반 높이)만큼 Z축 아래로 내리기 (발바닥 위치)
+		float HalfHeight = TargetCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		SpawnLocation.Z -= HalfHeight;
+
+		// 만약 발바닥보다 조금 더 아래로 내리거나 미세 조정하고 싶다면 오프셋 추가 가능
+		// SpawnLocation.Z -= 20.0f; 
+		
+		// 월드에 파티클 스폰
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(), 
+			CharacterTeleportInEffect, 
+			SpawnLocation, 
+			SpawnRotation, 
+			FVector(0.5f), 
+			true
+		);
+	}
+}
+
+void AHechi::DisablePlayerInput()
+{
+	if (TargetCharacter)
+	{
+		// 1. 캐릭터의 이동 컴포넌트를 가져옵니다.
+		UCharacterMovementComponent* MoveComp = TargetCharacter->GetCharacterMovement();
+		if (MoveComp)
+		{
+			// 이동(WASD) 비활성화
+			MoveComp->DisableMovement(); 
+			
+			TargetCharacter->JumpMaxCount = 0;   // 점프 가능 횟수를 0으로 만들어 점프 차단
+		}
+		
+		// 2. 애니메이션 그 자리에서 멈추기 (고정)
+		USkeletalMeshComponent* MeshComp = TargetCharacter->GetMesh();
+		if (MeshComp)
+		{
+			MeshComp->bPauseAnims = true; // 애니메이션 일시정지
+		}
+	}
+}
+
+void AHechi::EnablePlayerInput()
+{
+	if (TargetCharacter)
+	{
+		UCharacterMovementComponent* MoveComp = TargetCharacter->GetCharacterMovement();
+		if (MoveComp)
+		{
+			// 이동 모드를 다시 기본 걷기(Walking)로 복구
+			MoveComp->SetMovementMode(MOVE_Walking);
+            
+			// 점프 가능 횟수 원래대로 복구 (기본값 1)
+			TargetCharacter->JumpMaxCount = 1; 
+		}
+		// 2. 애니메이션 그 자리에서 멈추기 (고정)
+		USkeletalMeshComponent* MeshComp = TargetCharacter->GetMesh();
+		if (MeshComp)
+		{
+			MeshComp->bPauseAnims = false; // 애니메이션 재생 재개
+		}
+	}
+}
+
+void AHechi::PlayCharacterTeleportReadyEffect()
+{
+	if (TargetCharacter && CharacterTeleportReadyEffect)
+	{
+		// 1. 트레이스의 시작점(Start)과 끝점(End) 설정
+		// 캐릭터의 현재 위치에서 시작해서, 아래쪽(Z축 마이너스)으로 1000유닛만큼 레이저를 쏩니다.
+		FVector StartLocation = TargetCharacter->GetActorLocation();
+		FVector EndLocation = StartLocation - FVector(0.0f, 0.0f, 1000.0f); 
+
+		// 2. 라인 트레이스 충돌 매개변수 설정 (자기 자신이나 보스는 무시하도록 설정)
+		FHitResult HitResult;
+		FCollisionQueryParams QueryParams;
+		QueryParams.AddIgnoredActor(this);            // 보스 자신 무시
+		QueryParams.AddIgnoredActor(TargetCharacter); // 타깃 캐릭터 무시 (자기 몸통에 부딪히는 것 방지)
+
+		// 기본 이펙트 스폰 위치용 변수 (트레이스가 실패할 경우를 대비한 백업용)
+		FVector SpawnLocation = StartLocation;
+		float HalfHeight = TargetCharacter->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		SpawnLocation.Z -= HalfHeight; 
+
+		FRotator SpawnRotation = TargetCharacter->GetActorRotation();
+
+		// 3. 아래 방향으로 라인 트레이스 시도 (정석적인 ECC_Visibility 채널 사용)
+		bool bHit = GetWorld()->LineTraceSingleByChannel(
+			HitResult, 
+			StartLocation, 
+			EndLocation, 
+			ECC_Visibility, 
+			QueryParams
+		);
+
+		if (bHit)
+		{
+			// 바닥에 충돌했다면, 실제 충돌한 지점(ImpactPoint)을 스폰 위치로 설정합니다.
+			SpawnLocation = HitResult.ImpactPoint;
+
+			// 디버그용: 필요하다면 살짝 바닥 틈새 파묻힘을 방지하기 위해 1~2유닛 정도 올릴 수 있습니다.
+			SpawnLocation.Z += 2.0f;
+		}
+
+		// 4. 최종 결정된 바닥 위치에 나이아 가라 한번만 스폰
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			CharacterTeleportReadyEffect,
+			SpawnLocation,
+			SpawnRotation,
+			FVector(1.0f), // 스케일
+			true           // AutoDestroy
+		);
+	}
 }
 
 #if WITH_EDITOR
