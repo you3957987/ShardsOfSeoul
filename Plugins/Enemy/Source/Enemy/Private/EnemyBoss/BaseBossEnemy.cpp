@@ -175,16 +175,13 @@ float ABaseBossEnemy::TakeDamage(float DamageAmount, struct FDamageEvent const& 
 		
 		if ( Health <= 0.f )
 		{
-			UEnemyLogManager::EnemyLog( GetLogTypeFromEnemyType(), 
-				FString::Printf(TEXT("[%s]가 [%.f] 대미지 받아 사망"), *MeshName, DamageToApply));
-			
 			CommonBossLogData.Result = TEXT("BossDead"); // 로그 데이터에 결과 기록
 			
 			Die();
 			return DamageToApply;
 		}
 		
-		if (BossHealthBar->HealthProgressBar)
+		if (BossHealthBar && BossHealthBar->HealthProgressBar)
 		{
 			BossHealthBar->HealthProgressBar->SetPercent(Health / MaxHealth);
 		}

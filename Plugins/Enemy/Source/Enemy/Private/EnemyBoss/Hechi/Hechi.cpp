@@ -10,6 +10,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "EngineUtils.h"
 
 AHechi::AHechi()
 {
@@ -25,8 +26,20 @@ void AHechi::BeginPlay()
 {
 	Super::BeginPlay();
 	
+	InitializePostProcessVolume(); // 포스트 프로세스 볼륨 초기화
+	
 	CommonBossLogData.BossID = BossLogId; // 로그 데이터에 보스 ID 기록
 	
+	if ( bDebugMode == true )
+	{
+		GetWorldTimerManager().SetTimer(
+			RepeatingTimerHandle,                      // 타이머 핸들
+			this,                                      // 대상 클래스 (자기 자신)
+			&AHechi::MyThreeSecondRepeatingFunction,   // 반복 실행할 함수의 주소
+			3.0f,                                      // 실행 간격 (초 단위)
+			true                                       // true = 무한 반복 실행 (false면 1번만 실행됨)
+		);
+	}
 }
 
 void AHechi::Tick(float DeltaTime)
@@ -61,10 +74,53 @@ float AHechi::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEv
 
 void AHechi::Die()
 {
-	// 액터가 사라질 때 타이머 청소
-	GetWorldTimerManager().ClearTimer(LaserTimerHandle);
+	FTimerManager& TimerManager = GetWorldTimerManager();
+
+	// 1. 디버그 및 기본 반복 타이머 청소
+	TimerManager.ClearTimer(RepeatingTimerHandle);
+	// 2. 레이저 패턴 타이머 청소
+	TimerManager.ClearTimer(LaserTimerHandle);
+	// 3. 레이저 발사체(연사) 패턴 타이머 청소
+	TimerManager.ClearTimer(ProjectileTimerHandle);
+	// 4. 보스 자체 텔레포트 타이머 청소
+	TimerManager.ClearTimer(TeleportTimerHandle);
+	// 5. 2페이즈 맵 변경 시 캐릭터 강제 텔레포트 타이머 청소
+	TimerManager.ClearTimer(CharacterTeleportTimerHandle);
+	// 6. 5초마다 무한 반복되던 포스트 프로세스 변경 루프 타이머 청소
+	TimerManager.ClearTimer(PostProcessLoopHandle);
 	
 	Super::Die();
+}
+
+void AHechi::MyThreeSecondRepeatingFunction()
+{	
+	// 대미지를 적용하는 함수
+	UGameplayStatics::ApplyDamage(
+		this,             // 대미지를 받을 액터 (자기 자신)
+		10.f,     // 대미지 양
+		GetController(),  // 대미지를 가한 컨트롤러 (자해이므로 본인의 컨트롤러)
+		this,             // 대미지를 유발한 액터 (자기 자신)
+		UDamageType::StaticClass() // 대미지 타입 클래스 (기본 타입)
+	);
+	
+}
+
+void AHechi::InitializePostProcessVolume()
+{
+	// 찾고자 하는 태그 이름을 여기에 하드코딩합니다.
+	const FName HardCodedTag = TEXT("Hechi");
+
+	for (TActorIterator<APostProcessVolume> It(GetWorld()); It; ++It)
+	{
+		APostProcessVolume* Volume = *It;
+		if (Volume && Volume->ActorHasTag(HardCodedTag))
+		{
+			LevelPostProcessVolume = Volume;
+			UE_LOG(LogTemp, Log, TEXT("Hechi: Successfully cached PostProcessVolume with tag: %s"), *HardCodedTag.ToString());
+			return;
+		}
+	}
+	UE_LOG(LogTemp, Warning, TEXT("Hechi: Failed to find PostProcessVolume with tag: %s"), *HardCodedTag.ToString());
 }
 
 UAnimMontage* AHechi::StartLaserAttack()
@@ -669,6 +725,133 @@ void AHechi::PlayCharacterTeleportReadyEffect()
 			true           // AutoDestroy
 		);
 	}
+}
+
+void AHechi::ChangePostProcessMaterialByIndex(int32 Index)
+{
+	// 1. 포스트 프로세스 볼륨이 정상적으로 캐싱되어 있는지 확인
+	if (LevelPostProcessVolume == nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Hechi: CachedPPVolume is null. Cannot change material."));
+		return;
+	}
+
+	// 2. 입력된 인덱스가 배열 범위 내에 있는지 안전성 검사 (Nptr/Crash 방지)
+	if (!PostProcessMaterialArray.IsValidIndex(Index))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Hechi: Invalid material index or null material at index: %d"), Index);
+		return;
+	}
+	
+	if ( PostProcessMaterialArray[Index] == nullptr )
+	{
+		LevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+		return;
+	}
+
+	// 3. 가중치(Weight)를 가진 가중 블렌더블 구조체 생성
+	FWeightedBlendable NewBlendable;
+	NewBlendable.Weight = 1.0f;              // 효과 적용 강도 (0.0 ~ 1.0)
+	NewBlendable.Object = PostProcessMaterialArray[Index]; // 선택한 머터리얼 인터페이스 설정
+
+	// 4. 기존 볼륨에 걸려있던 포스트 프로세스 머터리얼 배열을 완전히 비우기
+	LevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+
+	// 5. 새로운 머터리얼 추가 적용
+	LevelPostProcessVolume->Settings.WeightedBlendables.Array.Add(NewBlendable);
+
+	// 6. (옵션) 혹시 볼륨이나 가중치가 꺼져있다면 확실하게 켜주기
+	LevelPostProcessVolume->bEnabled = true;
+	LevelPostProcessVolume->BlendWeight = 1.0f;
+
+	UE_LOG(LogTemp, Log, TEXT("Hechi: Successfully changed PostProcess Material to Index [%d]: %s"), 
+		Index, *PostProcessMaterialArray[Index]->GetName());
+}
+
+UAnimMontage* AHechi::PlayChangePostProcessMontage()
+{
+	if ( ChangePostProcessMontage )
+	{
+		PlayAnimMontage(ChangePostProcessMontage);
+		
+		if ( BlackboardComp )
+		{
+			BlackboardComp->SetValueAsFloat("AttackDelay", AttackStruct.ChangePostProcessDelay); // 행동 딜레이 설정
+		}
+		
+		return ChangePostProcessMontage;
+	}
+	return nullptr;
+}
+
+void AHechi::RandomChangePostProcess()
+{
+	// 머터리얼 배열이 비어있는지 확인
+	if (PostProcessMaterialArray.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Hechi: PostProcessMaterialArray is empty!"));
+		return;
+	}
+
+	// 머터리얼이 1개만 있는 경우 -> 중복 체크 없이 바로 적용
+	if (PostProcessMaterialArray.Num() == 1)
+	{
+		CurrentPostProcessIndex = 0;
+	}
+	else
+	{
+		// 3. 이전 인덱스와 겹치지 않는 새로운 랜덤 인덱스 추출
+		int32 NewIndex = CurrentPostProcessIndex;
+		while (NewIndex == CurrentPostProcessIndex)
+		{
+			NewIndex = FMath::RandRange(0, PostProcessMaterialArray.Num() - 1);
+		}
+		CurrentPostProcessIndex = NewIndex;
+	}
+	
+	ShakeCamera();// 카메라 흔들기 효과 호출
+	
+	FTimerHandle PostProcessDelayHandle;
+    
+	// [this, NextIndex = CurrentPostProcessIndex] 형태로 인덱스 값을 확실히 캡처해 둡니다.
+	GetWorldTimerManager().SetTimer(
+		PostProcessDelayHandle, 
+		[this, NextIndex = CurrentPostProcessIndex]()
+		{
+			// 2초 뒤 이 중괄호 내부 코드가 실행됩니다.
+			ChangePostProcessMaterialByIndex(NextIndex);
+		}, 
+		0.1f,  //지연 (하드코딩)
+		false  // 반복 없이 단 한 번만 실행
+	);
+	
+}
+
+void AHechi::ShakeCamera()
+{
+	// 에셋이 블루프린트에서 정상적으로 등록되었는지 확인
+	if (CameraShakeClass)
+	{
+		APlayerController* PC = GetWorld()->GetFirstPlayerController();
+		if (PC && PC->PlayerCameraManager)
+		{
+			// 지정한 에셋의 세팅(0.5초)대로 카메라를 흔듭니다.
+			PC->ClientStartCameraShake(CameraShakeClass, 1.0f);
+		}
+	}
+}
+
+void AHechi::StartLoopPostProcessChange()
+{
+	UE_LOG(LogTemp, Log, TEXT("Hechi: Starting PostProcess Loop Change"));
+	
+	GetWorldTimerManager().SetTimer(
+		PostProcessLoopHandle,
+		this,
+		&AHechi::RandomChangePostProcess,
+		3.0f, // 5초 간격
+		true  // true = 무한 반복 실행
+	);
 }
 
 #if WITH_EDITOR
