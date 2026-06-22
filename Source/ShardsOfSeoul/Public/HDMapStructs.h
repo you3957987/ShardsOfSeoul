@@ -154,9 +154,12 @@ public:
 	FString Kind;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString LinkID;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
 	TArray<FVector> Points;
 
-	FHDMapB3MarkRow() : ID(TEXT("")), Kind(TEXT("")) {}
+	FHDMapB3MarkRow() : ID(TEXT("")), Kind(TEXT("")), LinkID(TEXT("")) {}
 };
 
 /** C1_TRAFFICLIGHT: 신호등 */
@@ -211,9 +214,12 @@ public:
 	FString ID;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString Type;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
 	TArray<FVector> Points;
 
-	FHDMapC4SpeedBumpRow() : ID(TEXT("")) {}
+	FHDMapC4SpeedBumpRow() : ID(TEXT("")), Type(TEXT("")) {}
 };
 
 /** C5_HEIGHTBARRIER: 높이제한장해물 */

@@ -10,6 +10,65 @@
 
 class UDynamicMeshComponent;
 
+USTRUCT(BlueprintType)
+struct FHDMapMarkUVRange
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float UMin = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float UMax = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float VMin = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float VMax = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	bool bFlipV = false; // 상하 반전
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	bool bRotate90 = false; // 90도 회전
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float TargetWidth = 150.0f; // 노면 기호의 표준 가로 크기 (cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float TargetHeight = 500.0f; // 노면 기호의 표준 세로 크기 (cm)
+};
+
+USTRUCT(BlueprintType)
+struct FHDMapMarkFlipOverride
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	bool bFlipV = false; // 개별 상하 반전
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	bool bRotate90 = false; // 개별 90도 회전
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float RotationAngle = 0.0f; // 개별 회전 각도 (도 단위, 예: 45.0)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float TilingX = 1.0f; // 개별 가로 타일링 반복 횟수 (1.0 = 기본)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	float TilingY = 1.0f; // 개별 세로 타일링 반복 횟수 (1.0 = 기본)
+
+	FHDMapMarkFlipOverride()
+		: bFlipV(false)
+		, bRotate90(false)
+		, RotationAngle(0.0f)
+		, TilingX(1.0f)
+		, TilingY(1.0f)
+	{}
+};
+
 UCLASS()
 class SHARDSOFSEOUL_API AHDMapMeshGenerator : public AActor
 {
@@ -139,6 +198,47 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Lane Settings")
 	float LaneDashedSpaceLength; // 점선 공백 길이 (기본 300cm = 3m)
 
+	// --- Mark Settings ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mark Settings")
+	UMaterialInterface* MarkAtlasMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mark Settings")
+	UMaterialInterface* CrosswalkMaterial; // 횡단보도 전용 머티리얼 (Wrap 반복 텍스처 적용용)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mark Settings")
+	float MarkZOffset; // 노면 스냅 오프셋 (기본 1.5cm)
+
+
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mark Settings")
+	TMap<FString, FHDMapMarkUVRange> CustomMarkUVRanges; // 에디터에서 직접 지정 가능한 기호(Kind)별 커스텀 UV 맵 매핑 테이블
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mark Settings")
+	TMap<FString, FHDMapMarkFlipOverride> MarkFlipOverrides; // 특정 다각형 ID(Line ID)별 상하/좌우 반전 오버라이드 테이블
+
+	// --- SpeedBump Settings ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - SpeedBump Settings", meta = (ClampMin = "0.0"))
+	float SpeedBumpHeight; // 과속 방지턱 기본 수직 두께/높이 (센티미터 단위, 기본값 10cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - SpeedBump Settings", meta = (ClampMin = "5.0"))
+	float SpeedBumpStripeWidth; // 과속 방지턱 사선 빗금 패턴 한 줄의 수평 너비 (센티미터 단위, 기본값 30cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - SpeedBump Settings", meta = (ClampMin = "5.0"))
+	float SpeedBumpGridSpacing; // 과속 방지턱 정점 분할 및 내부 그리드 간격 (센티미터 단위, 기본값 30cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - SpeedBump Settings")
+	float SpeedBumpZOffset; // 도로 뚫림 방지용 과속 방지턱 Z축 미세 추가 오프셋 (센티미터 단위, 기본값 1.0cm)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - SpeedBump Settings")
+	UMaterialInterface* SpeedBumpMaterial; // 과속 방지턱에 할당할 기본 머티리얼 에셋 (기존 유지)
+
+	// --- B3 Stamp Settings ---
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - B3 Stamp Settings")
+	bool bEnableB3Stamping; // 도로 메쉬에 B3 다각형을 도장으로 각인할지 여부
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - B3 Stamp Settings")
+	float B3StampHeight; // 도로 표면 위로 각인할 미세 높이 (cm, 기본 0.1f = 1mm 미세 오프셋)
+
 	// 공간 분할 격자 크기 (센티미터 단위, 대규모 정점의 삼각분할 연산 속도 개선 및 왜곡 방지용 격자 크기)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Mesh Settings", meta = (ClampMin = "500.0"))
 	float GridSize;
@@ -155,6 +255,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	ADynamicMeshActor* OutputLaneDynamicMeshActor;
 
+	// 과속 방지턱 메쉬 생성 결과를 구워낼 타겟 Dynamic Mesh Actor (월드 상의 액터)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	ADynamicMeshActor* OutputSpeedBumpDynamicMeshActor;
+
 	// Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanRoad)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	FString SaveAssetPath;
@@ -166,6 +270,18 @@ public:
 	// 차선 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanLane)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	FString SaveLaneAssetPath;
+
+	// 과속 방지턱 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanSpeedBump)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	FString SaveSpeedBumpAssetPath;
+
+	// 노면표시 메쉬 생성 결과를 구워낼 타겟 Dynamic Mesh Actor (월드 상의 액터)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	ADynamicMeshActor* OutputMarkDynamicMeshActor;
+
+	// 노면표시 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanMark)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	FString SaveMarkAssetPath;
 
 	// 높이 분석 타겟으로 삼을 월드에 배치된 도로 Static Mesh Actor
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Snap Target")
@@ -202,6 +318,26 @@ public:
 	// 생성된 차선 메쉬를 Static Mesh 에셋으로 저장하는 버튼
 	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
 	void SaveLaneToStaticMeshAsset();
+
+	// 과속 방지턱 메쉬 생성 기능 호출 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void GenerateSpeedBumpMesh();
+
+	// 생성된 과속 방지턱 메쉬를 Static Mesh 에셋으로 저장하는 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void SaveSpeedBumpToStaticMeshAsset();
+
+	// 노면표시 메쉬 생성 기능 호출 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void GenerateMarkMesh();
+
+	// 생성된 노면표시 메쉬를 Static Mesh 에셋으로 저장하는 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void SaveMarkToStaticMeshAsset();
+
+	// [R&D] 타겟 로드 스태틱 메쉬의 폴리곤을 출력 다이내믹 메쉬로 그대로 복사하는 기능
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void CopyTargetRoadToDynamicMesh();
 
 	// 도로 다각형 영역에 맞춰 Landscape 높이맵을 직접 깎아내는 에디터 전용 기능
 	// ⚠️ 실행 전 레벨 저장/백업 권장 (Ctrl+Z로 Undo 가능)
