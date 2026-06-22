@@ -11,6 +11,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
 #include "ShardsOfSeoul.h"
+#include <Character/SprintComp.h>
 
 AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 {
@@ -48,6 +49,7 @@ AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
+	SprintComp = CreateDefaultSubobject<USprintComp>(TEXT("SprintComp"));
 }
 
 void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -65,6 +67,12 @@ void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerI
 
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AShardsOfSeoulCharacter::Look);
+		
+		if (SprintComp)
+		{
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Started, SprintComp, &USprintComp::StartSprint);
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Completed, SprintComp, &USprintComp::StopSprint);
+		}
 	}
 	else
 	{

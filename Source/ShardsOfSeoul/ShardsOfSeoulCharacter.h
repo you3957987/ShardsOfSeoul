@@ -7,6 +7,7 @@
 #include "Logging/LogMacros.h"
 #include "ShardsOfSeoulCharacter.generated.h"
 
+class USprintComp;
 class USpringArmComponent;
 class UCameraComponent;
 class UInputAction;
@@ -49,6 +50,9 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Input")
 	UInputAction* MouseLookAction;
 
+	UPROPERTY(EditAnywhere, Category="Input")
+	UInputAction* SprintAction;
+	
 public:
 
 	/** Constructor */
@@ -92,5 +96,9 @@ public:
 
 	/** Returns FollowCamera subobject **/
 	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+	
+private:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	USprintComp* SprintComp;
 };
 
