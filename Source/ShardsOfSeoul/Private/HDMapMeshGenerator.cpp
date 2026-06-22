@@ -6,6 +6,9 @@
 #include "UDynamicMesh.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "GeometryScript/MeshAssetFunctions.h"
+#include "GeometryScript/MeshBooleanFunctions.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
+#include "GeometryScript/MeshBasicEditFunctions.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
 #include "Components/StaticMeshComponent.h"
@@ -127,6 +130,26 @@ AHDMapMeshGenerator::AHDMapMeshGenerator()
 	LaneDashedSolidLength = 300.f; // 3m
 	LaneDashedSpaceLength = 500.f; // 5m (그 외 점선 기본값)
 	SaveLaneAssetPath = TEXT("/Game/HDMap/SM_NamsanLane");
+
+	// 과속 방지턱 기본값 초기화
+	SpeedBumpHeight = 10.f;
+	SpeedBumpGridSpacing = 30.f;
+	SpeedBumpZOffset = 1.0f;
+	SpeedBumpMaterial = nullptr;
+	OutputSpeedBumpDynamicMeshActor = nullptr;
+	SaveSpeedBumpAssetPath = TEXT("/Game/HDMap/SM_NamsanSpeedBump");
+
+	// 도장 각인 기본값 초기화
+	bEnableB3Stamping = true;
+	B3StampHeight = 0.1f; // 0.1cm (1mm 미세 오프셋으로 Z-Fighting 방지 및 도로 밀착)
+
+	// 노면표시 기본값 초기화
+	MarkAtlasMaterial = nullptr;
+	CrosswalkMaterial = nullptr;
+	MarkZOffset = 1.5f;
+
+	OutputMarkDynamicMeshActor = nullptr;
+	SaveMarkAssetPath = TEXT("/Game/HDMap/SM_NamsanMark");
 }
 
 
@@ -1438,6 +1461,160 @@ void AHDMapMeshGenerator::GenerateRoadMesh()
 
 	// 컴포넌트에 로드 및 갱신 통지
 	DynMesh->SetMesh(MoveTemp(NativeMesh));
+
+	// --- B3 Stamp (Direct Z-Snapped Append) 각인 처리 ---
+	if (bEnableB3Stamping && VisualizerActor)
+	{
+		UDataTable* B3MarkTable = VisualizerActor->DT_B3_Mark;
+		if (B3MarkTable)
+		{
+			TArray<FHDMapB3MarkRow*> B3Rows;
+			B3MarkTable->GetAllRows<FHDMapB3MarkRow>(TEXT("HDMapMeshGen_B3Stamp"), B3Rows);
+			
+			UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Processing %d B3 Marks for stamping..."), B3Rows.Num());
+
+			UE::Geometry::FDynamicMesh3* NativeMeshPtr = DynMesh->GetMeshPtr();
+			if (NativeMeshPtr)
+			{
+				NativeMeshPtr->EnableAttributes();
+				if (!NativeMeshPtr->Attributes()->GetMaterialID())
+				{
+					NativeMeshPtr->Attributes()->EnableMaterialID();
+				}
+				auto* MaterialIDs = NativeMeshPtr->Attributes()->GetMaterialID();
+
+				FTransform TargetActorTransform = OutputDynamicMeshActor->GetActorTransform();
+
+				for (FHDMapB3MarkRow* Row : B3Rows)
+				{
+					if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 3) continue;
+
+					// ⚠️ [정차금지대 524] 스킵 필터링
+					if (Row->Kind.Equals(TEXT("524"))) continue;
+
+					// 1. 월드 좌표 및 월드 중심점 계산
+					TArray<FVector> WorldPoints;
+					FVector WorldCentroid = FVector::ZeroVector;
+					for (const FVector& Pt : Row->Points)
+					{
+						FVector WP = VisTransform.TransformPosition(Pt);
+						WorldPoints.Add(WP);
+						WorldCentroid += WP;
+					}
+					WorldCentroid /= (float)WorldPoints.Num();
+
+					float RoadZ = WorldCentroid.Z;
+					if (bSnapToLandscape)
+					{
+						RoadZ = GetLandscapeZ(WorldCentroid) + ZOffset;
+					}
+
+					// 2. TargetActor의 로컬 좌표계로 다각형 점들을 변환
+					FVector LocalCentroid = TargetActorTransform.InverseTransformPosition(FVector(WorldCentroid.X, WorldCentroid.Y, RoadZ));
+
+					TArray<FVector2D> Polygon2D;
+					for (const FVector& WP : WorldPoints)
+					{
+						FVector LocalWP = TargetActorTransform.InverseTransformPosition(FVector(WP.X, WP.Y, RoadZ));
+						Polygon2D.Add(FVector2D(LocalWP.X - LocalCentroid.X, LocalWP.Y - LocalCentroid.Y));
+					}
+
+					// 마지막 중복 정점 제거
+					if (Polygon2D.Num() > 1 && FVector2D::DistSquared(Polygon2D[0], Polygon2D.Last()) < 1.0f)
+					{
+						Polygon2D.RemoveAt(Polygon2D.Num() - 1);
+					}
+
+					if (Polygon2D.Num() < 3) continue;
+
+					// Winding Order 판정 및 강제 CCW 변환
+					float SignedArea = 0.0f;
+					int32 NumPts = Polygon2D.Num();
+					for (int32 i = 0; i < NumPts; ++i)
+					{
+						const FVector2D& P1 = Polygon2D[i];
+						const FVector2D& P2 = Polygon2D[(i + 1) % NumPts];
+						SignedArea += (P1.X * P2.Y - P2.X * P1.Y);
+					}
+					if (SignedArea < 0.0f)
+					{
+						TArray<FVector2D> Reversed;
+						Reversed.Reserve(Polygon2D.Num());
+						for (int32 idx = Polygon2D.Num() - 1; idx >= 0; --idx)
+						{
+							Reversed.Add(Polygon2D[idx]);
+						}
+						Polygon2D = Reversed;
+					}
+
+					// 3. 도로 곡률 고도(Z) 획득 및 정점 로컬 변환
+					TArray<int32> VertexIndices;
+					VertexIndices.Reserve(WorldPoints.Num());
+					TArray<FVector> LocalPoints;
+					LocalPoints.Reserve(WorldPoints.Num());
+
+					for (int32 idx = 0; idx < WorldPoints.Num(); ++idx)
+					{
+						FVector WP = WorldPoints[idx];
+						
+						// 도로의 정확한 Z 높이를 해당 XY 좌표에서 획득하여 밀착시킴
+						float SnapZ = GetRoadMeshZ(DynMesh, FVector2D(WP.X, WP.Y), WP.Z, TargetActorTransform);
+						WP.Z = SnapZ + B3StampHeight; // 미세 오프셋 반영
+
+						FVector LocalPt = TargetActorTransform.InverseTransformPosition(WP);
+						LocalPoints.Add(LocalPt);
+
+						int32 VIdx = NativeMeshPtr->AppendVertex(LocalPt);
+						VertexIndices.Add(VIdx);
+					}
+
+					// 4. 2D 델로네 삼각분할 수행 및 삼각형 직접 주입
+					TArray<FIntVector> Triangles2D;
+					if (RunDelaunayTriangulation(LocalPoints, Triangles2D))
+					{
+						for (const FIntVector& Tri : Triangles2D)
+						{
+							FVector V0 = LocalPoints[Tri.X];
+							FVector V1 = LocalPoints[Tri.Y];
+							FVector V2 = LocalPoints[Tri.Z];
+
+							FVector TriCentroid = (V0 + V1 + V2) / 3.0f;
+							FVector2D Centroid2D(TriCentroid.X, TriCentroid.Y);
+
+							if (IsPointInPolygon2D(Centroid2D, LocalPoints))
+							{
+								FVector E0 = V1 - V0;
+								FVector E1 = V2 - V0;
+								FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+								int32 FinalY = Tri.Y;
+								int32 FinalZ = Tri.Z;
+								if (CrossVal.Z > 0.f)
+								{
+									FinalY = Tri.Z;
+									FinalZ = Tri.Y;
+								}
+
+								int32 G_V0 = VertexIndices[Tri.X];
+								int32 G_V1 = VertexIndices[FinalY];
+								int32 G_V2 = VertexIndices[FinalZ];
+
+								if (G_V0 != G_V1 && G_V1 != G_V2 && G_V2 != G_V0)
+								{
+									int32 NewTri = NativeMeshPtr->AppendTriangle(G_V0, G_V1, G_V2);
+									if (NewTri >= 0 && MaterialIDs)
+									{
+										MaterialIDs->SetValue(NewTri, 1); // 노면 표시 머티리얼 ID 할당
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	DynMeshComp->NotifyMeshUpdated();
 
 	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Extruded ribbon road mesh generated successfully! Vertices: %d, Triangles: %d"),
@@ -2824,22 +3001,25 @@ void AHDMapMeshGenerator::GenerateLaneMesh()
 						CollisionParams.AddIgnoredActor(OutputLaneDynamicMeshActor);
 					}
 
-					// 가시성(Visibility) 채널로 레이캐스트하여 가장 위에 부딪힌 표면 획득
-					if (World->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams))
+					// 지정된 커스텀 채널(Road - ECC_GameTraceChannel1)로 레이캐스트하여 가장 위에 부딪힌 도로 표면 획득
+					if (World->LineTraceSingleByChannel(HitResult, Start, End, ECC_GameTraceChannel1, CollisionParams))
 					{
 						AActor* HitActor = HitResult.GetActor();
 						bool bIsTargetRoad = false;
 
-						if (TargetRoadStaticMeshActor && HitActor == TargetRoadStaticMeshActor)
+						if (HitActor && HitActor != this)
 						{
-							bIsTargetRoad = true;
-						}
-						else if (OutputDynamicMeshActor && HitActor == OutputDynamicMeshActor)
-						{
-							bIsTargetRoad = true;
+							bool bIsIgnore = false;
+							if (OutputLaneDynamicMeshActor && HitActor == OutputLaneDynamicMeshActor) bIsIgnore = true;
+							if (VisualizerActor && HitActor == VisualizerActor) bIsIgnore = true;
+							if (HitActor->IsA(ALandscapeProxy::StaticClass())) bIsIgnore = true;
+
+							if (!bIsIgnore)
+							{
+								bIsTargetRoad = true;
+							}
 						}
 
-						// 명시적으로 지정한 타겟 도로 메시만 스냅 대상으로 허용
 						if (bIsTargetRoad)
 						{
 							TargetZ = HitResult.ImpactPoint.Z;
@@ -3093,5 +3273,1451 @@ void AHDMapMeshGenerator::SaveLaneToStaticMeshAsset()
 	else
 	{
 		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
+}
+
+void AHDMapMeshGenerator::GenerateSpeedBumpMesh()
+{
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is not specified."));
+		return;
+	}
+
+	if (!OutputSpeedBumpDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] OutputSpeedBumpDynamicMeshActor is not specified."));
+		return;
+	}
+
+	OutputSpeedBumpDynamicMeshActor->SetActorTransform(FTransform::Identity);
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	UDataTable* SpeedBumpTable = VisualizerActor->DT_C4_SpeedBump;
+	if (!SpeedBumpTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] DT_C4_SpeedBump is not mapped."));
+		return;
+	}
+
+	TArray<FHDMapC4SpeedBumpRow*> TargetRows;
+	SpeedBumpTable->GetAllRows<FHDMapC4SpeedBumpRow>(TEXT("HDMapMeshGen_SpeedBumpSearch"), TargetRows);
+
+	UDynamicMeshComponent* DynMeshComp = OutputSpeedBumpDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+
+	DynMesh->Reset();
+
+	// 도로 스냅을 위한 타겟 도로 메쉬 획득 (차선 생성 시와 100% 동일하게 일치시킵니다)
+	UDynamicMesh* RoadDynMesh = nullptr;
+	FTransform RoadTransform = FTransform::Identity;
+	UDynamicMesh* TempRoadDynMesh = nullptr; // GC 방지용 임시 라이프사이클 참조
+
+	if (TargetRoadStaticMeshActor)
+	{
+		UStaticMeshComponent* SMComp = TargetRoadStaticMeshActor->GetStaticMeshComponent();
+		if (SMComp && SMComp->GetStaticMesh())
+		{
+			UStaticMesh* RoadSM = SMComp->GetStaticMesh();
+			TempRoadDynMesh = NewObject<UDynamicMesh>();
+			
+			FGeometryScriptCopyMeshFromAssetOptions CopyOptions;
+			FGeometryScriptMeshReadLOD TargetLOD;
+			TargetLOD.LODIndex = 0;
+			EGeometryScriptOutcomePins Outcome;
+
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+				RoadSM,
+				TempRoadDynMesh,
+				CopyOptions,
+				TargetLOD,
+				Outcome
+			);
+
+			if (Outcome == EGeometryScriptOutcomePins::Success)
+			{
+				RoadDynMesh = TempRoadDynMesh;
+				RoadTransform = TargetRoadStaticMeshActor->GetActorTransform();
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied static mesh '%s' for speed bump snapping."), *RoadSM->GetName());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Failed to copy static mesh to temp dynamic mesh for speed bump snapping."));
+			}
+		}
+	}
+	else if (OutputDynamicMeshActor)
+	{
+		UDynamicMeshComponent* RoadDynMeshComp = OutputDynamicMeshActor->GetDynamicMeshComponent();
+		if (RoadDynMeshComp)
+		{
+			RoadDynMesh = RoadDynMeshComp->GetDynamicMesh();
+			RoadTransform = OutputDynamicMeshActor->GetActorTransform();
+		}
+	}
+
+	// 다각형 경계선을 특정 간격(예: 30cm)으로 조밀하게 세분화(리샘플링)하는 헬퍼 람다
+	auto ResamplePolygonPoints = [](const TArray<FVector>& OriginalPoints, float MaxStep, TArray<FVector>& OutResampled)
+	{
+		if (OriginalPoints.Num() < 2) return;
+		
+		for (int32 i = 0; i < OriginalPoints.Num(); ++i)
+		{
+			FVector P0 = OriginalPoints[i];
+			FVector P1 = OriginalPoints[(i + 1) % OriginalPoints.Num()]; // 닫힌 루프이므로 순환
+			
+			OutResampled.Add(P0);
+			float Dist = FVector::Dist(P0, P1);
+			if (Dist > MaxStep)
+			{
+				int32 Steps = FMath::CeilToInt(Dist / MaxStep);
+				for (int32 s = 1; s < Steps; ++s)
+				{
+					float T = (float)s / (float)Steps;
+					OutResampled.Add(FMath::Lerp(P0, P1, T));
+				}
+			}
+		}
+	};
+
+	UE::Geometry::FDynamicMesh3 NativeMesh;
+
+	// Z축 정렬용 헬퍼 람다 (방지턱 원본 고도 유실을 대비하여 월드 상하방 500m 스캔)
+	auto AdjustZ = [&](const FVector& Pt) -> float
+	{
+		float TargetZ = Pt.Z;
+		bool bSnapped = false;
+
+		UWorld* World = GetWorld();
+		if (World)
+		{
+			// 원본 Z 좌표보다 위아래 50m 범위로 수직 광선을 투사 (차선 생성과 완전히 동일)
+			FVector Start = FVector(Pt.X, Pt.Y, Pt.Z + 5000.f);
+			FVector End = FVector(Pt.X, Pt.Y, Pt.Z - 5000.f);
+
+			FHitResult HitResult;
+			FCollisionQueryParams CollisionParams;
+			CollisionParams.bTraceComplex = true;
+			CollisionParams.AddIgnoredActor(this);
+			if (OutputSpeedBumpDynamicMeshActor)
+			{
+				CollisionParams.AddIgnoredActor(OutputSpeedBumpDynamicMeshActor);
+			}
+
+			if (World->LineTraceSingleByChannel(HitResult, Start, End, ECC_GameTraceChannel1, CollisionParams))
+			{
+				AActor* HitActor = HitResult.GetActor();
+				bool bIsTargetRoad = false;
+
+				if (HitActor && HitActor != this)
+				{
+					bool bIsIgnore = false;
+					if (OutputSpeedBumpDynamicMeshActor && HitActor == OutputSpeedBumpDynamicMeshActor) bIsIgnore = true;
+					if (VisualizerActor && HitActor == VisualizerActor) bIsIgnore = true;
+					if (HitActor->IsA(ALandscapeProxy::StaticClass())) bIsIgnore = true;
+
+					if (!bIsIgnore)
+					{
+						bIsTargetRoad = true;
+					}
+				}
+
+				if (bIsTargetRoad)
+				{
+					TargetZ = HitResult.ImpactPoint.Z;
+					bSnapped = true;
+				}
+			}
+		}
+
+		if (!bSnapped && RoadDynMesh)
+		{
+			float RoadZ = GetRoadMeshZ(RoadDynMesh, FVector2D(Pt.X, Pt.Y), -99999.0f, RoadTransform);
+			if (RoadZ > -99000.0f)
+			{
+				TargetZ = RoadZ;
+				bSnapped = true;
+			}
+		}
+
+		if (!bSnapped && bSnapToLandscape)
+		{
+			float LandZ = GetLandscapeZ(Pt);
+			TargetZ = LandZ;
+			bSnapped = true;
+		}
+
+		return TargetZ;
+	};
+
+	int32 SpeedBumpCount = 0;
+
+	for (FHDMapC4SpeedBumpRow* Row : TargetRows)
+	{
+		if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 3) continue;
+
+		TArray<FVector> WorldPoints;
+		WorldPoints.Reserve(Row->Points.Num());
+		for (const FVector& Pt : Row->Points)
+		{
+			WorldPoints.Add(VisTransform.TransformPosition(Pt));
+		}
+
+		// Type 분석: 기본값은 높이 있는 방지턱("1"), 그 외 "2", "3"은 납작한 방지턱
+		FString SpeedBumpType = Row->Type;
+		if (SpeedBumpType.IsEmpty()) SpeedBumpType = TEXT("1");
+
+		TArray<FVector> DelaunayPoints;
+		TArray<FIntVector> Triangles;
+
+		if (SpeedBumpType.Equals(TEXT("1"))) // Type 1: 둥근 3D 아치형 방지턱
+		{
+			// 다각형 영역의 2D 바운딩 박스
+			FBox2D PolyBox(EForceInit::ForceInit);
+			for (const FVector& Pt : WorldPoints)
+			{
+				PolyBox += FVector2D(Pt.X, Pt.Y);
+			}
+
+			// 1) 경계 정점을 SpeedBumpGridSpacing 간격으로 조밀하게 세분화하여 추가 (경계부 디테일 정합 극대화)
+			ResamplePolygonPoints(WorldPoints, SpeedBumpGridSpacing, DelaunayPoints);
+
+			// 2) 내부 정점 그리드 분할 (Grid Refinement)
+			float LocalSpacing = SpeedBumpGridSpacing; // 지정된 간격으로 조밀하게 배치
+			for (float GridX = PolyBox.Min.X + LocalSpacing; GridX < PolyBox.Max.X; GridX += LocalSpacing)
+			{
+				for (float GridY = PolyBox.Min.Y + LocalSpacing; GridY < PolyBox.Max.Y; GridY += LocalSpacing)
+				{
+					FVector2D TestPt(GridX, GridY);
+					if (IsPointInPolygon2D(TestPt, WorldPoints))
+					{
+						// 내부 그리드 정점도 원본 기준 고도인 WorldPoints[0].Z를 부여하여 차선과 동일한 ±50m 레이트레이싱 스캔 범위 내에 정확히 물리도록 합니다.
+						DelaunayPoints.Add(FVector(GridX, GridY, WorldPoints[0].Z));
+					}
+				}
+			}
+
+			if (DelaunayPoints.Num() < 3) continue;
+
+			// 3) 각 정점의 고도를 스냅 및 경사보간 처리
+			float MaxDistToBoundary = 0.0f;
+			TArray<float> Distances;
+			Distances.Reserve(DelaunayPoints.Num());
+			for (const FVector& Pt : DelaunayPoints)
+			{
+				float Dist = ComputeDistToPolygon2D(FVector2D(Pt.X, Pt.Y), WorldPoints);
+				Distances.Add(Dist);
+				if (Dist > MaxDistToBoundary)
+				{
+					MaxDistToBoundary = Dist;
+				}
+			}
+
+			float Denominator = MaxDistToBoundary > 1.0f ? MaxDistToBoundary : 1.0f;
+
+			for (int32 Index = 0; Index < DelaunayPoints.Num(); ++Index)
+			{
+				FVector& Pt = DelaunayPoints[Index];
+				float SnappedZ = AdjustZ(Pt);
+				float DistToBoundary = Distances[Index];
+
+				// 최대 거리를 기준으로 0.0 ~ 1.0 비율 보간
+				float HeightRatio = FMath::Clamp(DistToBoundary / Denominator, 0.0f, 1.0f);
+				float ArchRatio = FMath::Sin(HeightRatio * HALF_PI); // 아치형 사인 곡선 보간
+
+				// 높이 부여 및 미세 뚫림 방지 오프셋 적용
+				Pt.Z = SnappedZ + (SpeedBumpHeight * ArchRatio) + SpeedBumpZOffset;
+			}
+
+			// 4) 삼각분할 수행
+			if (RunDelaunayTriangulation(DelaunayPoints, Triangles))
+			{
+				int32 VOffset = NativeMesh.VertexCount();
+				TArray<int32> GlobalIndices;
+				GlobalIndices.Reserve(DelaunayPoints.Num());
+
+				for (const FVector& Pt : DelaunayPoints)
+				{
+					GlobalIndices.Add(NativeMesh.AppendVertex(Pt));
+				}
+
+				for (const FIntVector& Tri : Triangles)
+				{
+					FVector V0 = DelaunayPoints[Tri.X];
+					FVector V1 = DelaunayPoints[Tri.Y];
+					FVector V2 = DelaunayPoints[Tri.Z];
+					FVector Centroid = (V0 + V1 + V2) / 3.0f;
+
+					if (IsPointInPolygon2D(FVector2D(Centroid.X, Centroid.Y), WorldPoints))
+					{
+						FVector E0 = V1 - V0;
+						FVector E1 = V2 - V0;
+						FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+						int32 FinalY = Tri.Y;
+						int32 FinalZ = Tri.Z;
+						if (CrossVal.Z > 0.f)
+						{
+							FinalY = Tri.Z;
+							FinalZ = Tri.Y;
+						}
+
+						int32 T_V0 = GlobalIndices[Tri.X];
+						int32 T_V1 = GlobalIndices[FinalY];
+						int32 T_V2 = GlobalIndices[FinalZ];
+
+						if (T_V0 != T_V1 && T_V1 != T_V2 && T_V2 != T_V0)
+						{
+							NativeMesh.AppendTriangle(T_V0, T_V1, T_V2);
+						}
+					}
+				}
+				SpeedBumpCount++;
+			}
+		}
+		else // Type 2, 3: 납작한 평면형 방지턱
+		{
+			// 다각형 영역의 2D 바운딩 박스
+			FBox2D PolyBox(EForceInit::ForceInit);
+			for (const FVector& Pt : WorldPoints)
+			{
+				PolyBox += FVector2D(Pt.X, Pt.Y);
+			}
+
+			// 1) 경계 정점을 SpeedBumpGridSpacing 간격으로 조밀하게 세분화하여 추가 (경계부 디테일 정합 극대화)
+			ResamplePolygonPoints(WorldPoints, SpeedBumpGridSpacing, DelaunayPoints);
+
+			// 2) 내부 정점 그리드 분할 (Grid Refinement)
+			float LocalSpacing = SpeedBumpGridSpacing; // 지정된 간격으로 조밀하게 배치
+			for (float GridX = PolyBox.Min.X + LocalSpacing; GridX < PolyBox.Max.X; GridX += LocalSpacing)
+			{
+				for (float GridY = PolyBox.Min.Y + LocalSpacing; GridY < PolyBox.Max.Y; GridY += LocalSpacing)
+				{
+					FVector2D TestPt(GridX, GridY);
+					if (IsPointInPolygon2D(TestPt, WorldPoints))
+					{
+						// 내부 그리드 정점도 원본 기준 고도인 WorldPoints[0].Z를 부여하여 차선과 동일한 ±50m 레이트레이싱 스캔 범위 내에 정확히 물리도록 합니다.
+						DelaunayPoints.Add(FVector(GridX, GridY, WorldPoints[0].Z));
+					}
+				}
+			}
+
+			if (DelaunayPoints.Num() < 3) continue;
+
+			// 3) 각 정점의 고도를 스냅 처리
+			for (FVector& Pt : DelaunayPoints)
+			{
+				float SnappedZ = AdjustZ(Pt);
+				// 미세 뚫림 방지 및 깜빡임 방지 오프셋 적용
+				Pt.Z = SnappedZ + SpeedBumpZOffset;
+			}
+
+			if (RunDelaunayTriangulation(DelaunayPoints, Triangles))
+			{
+				int32 VOffset = NativeMesh.VertexCount();
+				TArray<int32> GlobalIndices;
+				GlobalIndices.Reserve(DelaunayPoints.Num());
+
+				for (const FVector& Pt : DelaunayPoints)
+				{
+					GlobalIndices.Add(NativeMesh.AppendVertex(Pt));
+				}
+
+				for (const FIntVector& Tri : Triangles)
+				{
+					FVector V0 = DelaunayPoints[Tri.X];
+					FVector V1 = DelaunayPoints[Tri.Y];
+					FVector V2 = DelaunayPoints[Tri.Z];
+					FVector Centroid = (V0 + V1 + V2) / 3.0f;
+
+					if (IsPointInPolygon2D(FVector2D(Centroid.X, Centroid.Y), WorldPoints))
+					{
+						FVector E0 = V1 - V0;
+						FVector E1 = V2 - V0;
+						FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+						int32 FinalY = Tri.Y;
+						int32 FinalZ = Tri.Z;
+						if (CrossVal.Z > 0.f)
+						{
+							FinalY = Tri.Z;
+							FinalZ = Tri.Y;
+						}
+
+						int32 T_V0 = GlobalIndices[Tri.X];
+						int32 T_V1 = GlobalIndices[FinalY];
+						int32 T_V2 = GlobalIndices[FinalZ];
+
+						if (T_V0 != T_V1 && T_V1 != T_V2 && T_V2 != T_V0)
+						{
+							NativeMesh.AppendTriangle(T_V0, T_V1, T_V2);
+						}
+					}
+				}
+				SpeedBumpCount++;
+			}
+		}
+	}
+
+	int32 FinalVertexCount = NativeMesh.VertexCount();
+	int32 FinalTriangleCount = NativeMesh.TriangleCount();
+
+	DynMesh->SetMesh(MoveTemp(NativeMesh));
+	
+	// 다이내믹 메쉬 컴포넌트에 과속 방지턱 기본 머티리얼을 할당합니다.
+	DynMeshComp->SetMaterial(0, SpeedBumpMaterial);
+
+	DynMeshComp->NotifyMeshUpdated();
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] SpeedBump Mesh Generation Completed. Generated %d bumps. Vertices: %d, Triangles: %d"),
+		SpeedBumpCount, FinalVertexCount, FinalTriangleCount);
+}
+
+void AHDMapMeshGenerator::SaveSpeedBumpToStaticMeshAsset()
+{
+	if (!OutputSpeedBumpDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: OutputSpeedBumpDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputSpeedBumpDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh || DynMesh->IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: DynamicMesh is empty. Please generate speed bump mesh first."));
+		return;
+	}
+
+	if (SaveSpeedBumpAssetPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SaveSpeedBumpAssetPath is empty. Please define a path like /Game/HDMap/SM_NamsanSpeedBump."));
+		return;
+	}
+
+	FString PackagePath = SaveSpeedBumpAssetPath;
+	FString AssetName;
+	int32 LastSlashIndex;
+	if (PackagePath.FindLastChar('/', LastSlashIndex))
+	{
+		AssetName = PackagePath.RightChop(LastSlashIndex + 1);
+	}
+	else
+	{
+		AssetName = PackagePath;
+		PackagePath = TEXT("/Game/") + AssetName;
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create package at %s"), *PackagePath);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* TargetStaticMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, *PackagePath));
+	if (!TargetStaticMesh)
+	{
+		TargetStaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!TargetStaticMesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create or load StaticMesh object."));
+		return;
+	}
+
+	TargetStaticMesh->GetStaticMaterials().Empty();
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(SpeedBumpMaterial, TEXT("SpeedBumpMaterial")));
+
+	FGeometryScriptCopyMeshToAssetOptions CopyOptions;
+	CopyOptions.bEnableRecomputeNormals = true;
+	CopyOptions.bEnableRecomputeTangents = true;
+	CopyOptions.bEnableRemoveDegenerates = true;
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+
+	EGeometryScriptOutcomePins Outcome;
+	
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+		DynMesh,
+		TargetStaticMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		FAssetRegistryModule::AssetCreated(TargetStaticMesh);
+		TargetStaticMesh->MarkPackageDirty();
+		
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied and saved StaticMesh Asset at: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
+}
+
+void AHDMapMeshGenerator::GenerateMarkMesh()
+{
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is not specified."));
+		return;
+	}
+
+	if (!OutputMarkDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] OutputMarkDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDataTable* MarkTable = VisualizerActor->DT_B3_Mark;
+	if (!MarkTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] DT_B3_Mark is not mapped in visualizer."));
+		return;
+	}
+
+	// DynamicMeshComponent 및 DynamicMesh 준비
+	UDynamicMeshComponent* DynMeshComp = OutputMarkDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] OutputMarkDynamicMeshActor does not have a DynamicMeshComponent."));
+		return;
+	}
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+
+	// 컴포넌트 머티리얼 세팅
+	DynMeshComp->SetMaterial(0, MarkAtlasMaterial);
+	DynMeshComp->SetMaterial(1, CrosswalkMaterial);
+
+	// 출력 Dynamic Mesh Actor 트랜스폼 Identity
+	OutputMarkDynamicMeshActor->SetActorTransform(FTransform::Identity);
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	// 도로 스냅을 위한 타겟 도로 메쉬 획득
+	UDynamicMesh* RoadDynMesh = nullptr;
+	FTransform RoadTransform = FTransform::Identity;
+	UDynamicMesh* TempRoadDynMesh = nullptr; // GC 방지용 임시 라이프사이클 참조
+
+	if (TargetRoadStaticMeshActor)
+	{
+		UStaticMeshComponent* SMComp = TargetRoadStaticMeshActor->GetStaticMeshComponent();
+		if (SMComp && SMComp->GetStaticMesh())
+		{
+			UStaticMesh* RoadSM = SMComp->GetStaticMesh();
+			TempRoadDynMesh = NewObject<UDynamicMesh>();
+			
+			FGeometryScriptCopyMeshFromAssetOptions CopyOptions;
+			FGeometryScriptMeshReadLOD TargetLOD;
+			TargetLOD.LODIndex = 0;
+			EGeometryScriptOutcomePins Outcome;
+
+			UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+				RoadSM,
+				TempRoadDynMesh,
+				CopyOptions,
+				TargetLOD,
+				Outcome
+			);
+
+			if (Outcome == EGeometryScriptOutcomePins::Success)
+			{
+				RoadDynMesh = TempRoadDynMesh;
+				RoadTransform = TargetRoadStaticMeshActor->GetActorTransform();
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied static mesh '%s' for mark snapping."), *RoadSM->GetName());
+			}
+		}
+	}
+	else if (OutputDynamicMeshActor)
+	{
+		UDynamicMeshComponent* RoadDynMeshComp = OutputDynamicMeshActor->GetDynamicMeshComponent();
+		if (RoadDynMeshComp)
+		{
+			RoadDynMesh = RoadDynMeshComp->GetDynamicMesh();
+			RoadTransform = OutputDynamicMeshActor->GetActorTransform();
+		}
+	}
+
+	// Native Mesh 생성용
+	UE::Geometry::FDynamicMesh3 NativeMesh;
+	NativeMesh.EnableAttributes();
+	
+	if (!NativeMesh.Attributes()->GetMaterialID())
+	{
+		NativeMesh.Attributes()->EnableMaterialID();
+	}
+	auto* MaterialIDs = NativeMesh.Attributes()->GetMaterialID();
+
+	TArray<FHDMapB3MarkRow*> TargetRows;
+	MarkTable->GetAllRows<FHDMapB3MarkRow>(TEXT("HDMapMeshGen_AllB3MarkSearch"), TargetRows);
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Generating Mark Mesh for %d marks..."), TargetRows.Num());
+
+	// 포인트 리샘플링 헬퍼
+	auto ResamplePoints = [](const TArray<FVector>& OriginalPoints, float SampleDist, TArray<FVector>& OutResampled)
+	{
+		if (OriginalPoints.Num() < 2) return;
+
+		OutResampled.Add(OriginalPoints[0]);
+		float AccumulatedDistance = 0.f;
+		float TargetDistance = SampleDist;
+
+		for (int32 idx = 0; idx < OriginalPoints.Num() - 1; ++idx)
+		{
+			FVector P0 = OriginalPoints[idx];
+			FVector P1 = OriginalPoints[idx + 1];
+			float SegmentLen = FVector::Dist(P0, P1);
+
+			while (AccumulatedDistance + SegmentLen >= TargetDistance)
+			{
+				float Ratio = (TargetDistance - AccumulatedDistance) / SegmentLen;
+				FVector InterpolatedPt = FMath::Lerp(P0, P1, Ratio);
+				OutResampled.Add(InterpolatedPt);
+				TargetDistance += SampleDist;
+			}
+
+			AccumulatedDistance += SegmentLen;
+		}
+
+		if (FVector::Dist(OutResampled.Last(), OriginalPoints.Last()) > SampleDist * 0.1f)
+		{
+			OutResampled.Add(OriginalPoints.Last());
+		}
+	};
+
+	// Z 고도 정합 람다
+	auto AdjustZ = [&](FVector& Pt, const FString& LineID)
+	{
+		float TargetZ = Pt.Z;
+		bool bSnapped = false;
+
+		UWorld* World = GetWorld();
+		if (World)
+		{
+			FVector Start = FVector(Pt.X, Pt.Y, Pt.Z + 5000.f);
+			FVector End = FVector(Pt.X, Pt.Y, Pt.Z - 5000.f);
+
+			FHitResult HitResult;
+			FCollisionQueryParams CollisionParams;
+			CollisionParams.bTraceComplex = true;
+			CollisionParams.AddIgnoredActor(this);
+			if (OutputMarkDynamicMeshActor)
+			{
+				CollisionParams.AddIgnoredActor(OutputMarkDynamicMeshActor);
+			}
+
+			if (World->LineTraceSingleByChannel(HitResult, Start, End, ECC_GameTraceChannel1, CollisionParams))
+			{
+				AActor* HitActor = HitResult.GetActor();
+				bool bIsIgnore = false;
+				if (OutputMarkDynamicMeshActor && HitActor == OutputMarkDynamicMeshActor) bIsIgnore = true;
+				if (VisualizerActor && HitActor == VisualizerActor) bIsIgnore = true;
+				if (HitActor && HitActor->IsA(ALandscapeProxy::StaticClass())) bIsIgnore = true;
+
+				UE_LOG(LogTemp, Log, TEXT("[GenerateMarkMesh - Raycast] LineID: %s, Hit Actor: %s, Hit Z: %.2f (Ignored: %s)"),
+					*LineID,
+					HitActor ? *HitActor->GetName() : TEXT("NULL"),
+					HitResult.ImpactPoint.Z,
+					bIsIgnore ? TEXT("True") : TEXT("False"));
+
+				if (HitActor && !bIsIgnore)
+				{
+					TargetZ = HitResult.ImpactPoint.Z;
+					bSnapped = true;
+				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[GenerateMarkMesh - Raycast] LineID: %s, FAILED to hit any road actor at XY: %.1f, %.1f"), *LineID, Pt.X, Pt.Y);
+			}
+		}
+
+		if (!bSnapped && RoadDynMesh)
+		{
+			float RoadZ = GetRoadMeshZ(RoadDynMesh, FVector2D(Pt.X, Pt.Y), -99999.0f, RoadTransform);
+			if (RoadZ > -99000.0f)
+			{
+				TargetZ = RoadZ;
+				bSnapped = true;
+			}
+		}
+
+		if (!bSnapped && bSnapToLandscape)
+		{
+			float LandZ = GetLandscapeZ(Pt);
+			TargetZ = LandZ;
+			bSnapped = true;
+		}
+
+		Pt.Z = TargetZ + MarkZOffset;
+	};
+
+	// UV 범위 도우미
+	struct FMarkUVRange
+	{
+		float UMin;
+		float UMax;
+		float VMin;
+		float VMax;
+		bool bFlipV;
+		bool bRotate90;
+		float TargetWidth;
+		float TargetHeight;
+	};
+
+	auto GetUVRangeByKind = [this](const FString& Kind) -> FMarkUVRange
+	{
+		FMarkUVRange Range;
+		Range.bFlipV = false;
+		Range.bRotate90 = false;
+		Range.TargetWidth = 150.0f; // 기본 기호 가로폭
+		Range.TargetHeight = 500.0f; // 기본 기호 세로높이
+
+		// 1. 에디터에서 지정한 커스텀 UV 맵 매핑 테이블 먼저 확인
+		if (CustomMarkUVRanges.Contains(Kind))
+		{
+			const FHDMapMarkUVRange& CustomRange = CustomMarkUVRanges[Kind];
+			Range.UMin = CustomRange.UMin;
+			Range.UMax = CustomRange.UMax;
+			Range.VMin = CustomRange.VMin;
+			Range.VMax = CustomRange.VMax;
+			Range.bFlipV = CustomRange.bFlipV;
+			Range.bRotate90 = CustomRange.bRotate90;
+			Range.TargetWidth = CustomRange.TargetWidth;
+			Range.TargetHeight = CustomRange.TargetHeight;
+			return Range;
+		}
+
+		// 2. 없을 경우 하드코딩 기본 디폴트 아틀라스 맵 적용
+		// 기본값: 직진 화살표 (U: 0.0 ~ 0.1, V: 0.0 ~ 0.5)
+		Range.UMin = 0.0f; Range.UMax = 0.1f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+
+		if (Kind.Equals(TEXT("5371"))) // 직진 화살표
+		{
+			Range.UMin = 0.0f; Range.UMax = 0.1f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5372"))) // 좌회전
+		{
+			Range.UMin = 0.1f; Range.UMax = 0.2f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5373"))) // 우회전
+		{
+			Range.UMin = 0.2f; Range.UMax = 0.3f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5374"))) // 좌우회전
+		{
+			Range.UMin = 0.3f; Range.UMax = 0.4f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5379"))) // 전방향
+		{
+			Range.UMin = 0.4f; Range.UMax = 0.5f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5381"))) // 직진및좌회전
+		{
+			Range.UMin = 0.5f; Range.UMax = 0.6f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5382"))) // 직진및우회전
+		{
+			Range.UMin = 0.6f; Range.UMax = 0.7f; Range.VMin = 0.0f; Range.VMax = 0.5f;
+		}
+		else if (Kind.Equals(TEXT("5383"))) // 직진및유턴
+		{
+			Range.UMin = 0.0f; Range.UMax = 0.1f; Range.VMin = 0.5f; Range.VMax = 1.0f;
+			Range.TargetWidth = 200.0f; Range.TargetHeight = 600.0f;
+		}
+		else if (Kind.Equals(TEXT("5391"))) // 유턴
+		{
+			Range.UMin = 0.1f; Range.UMax = 0.2f; Range.VMin = 0.5f; Range.VMax = 1.0f;
+			Range.TargetWidth = 200.0f; Range.TargetHeight = 600.0f;
+		}
+		else if (Kind.Equals(TEXT("5392"))) // 좌회전및유턴
+		{
+			Range.UMin = 0.2f; Range.UMax = 0.3f; Range.VMin = 0.5f; Range.VMax = 1.0f;
+			Range.TargetWidth = 200.0f; Range.TargetHeight = 600.0f;
+		}
+		else if (Kind.Equals(TEXT("5431")) || Kind.Equals(TEXT("5432"))) // 차로변경 (좌/우로합류)
+		{
+			Range.UMin = 0.3f; Range.UMax = 0.4f; Range.VMin = 0.5f; Range.VMax = 1.0f;
+		}
+		else if (Kind.Equals(TEXT("544"))) // 오르막경사면 (다이아몬드)
+		{
+			Range.UMin = 0.4f; Range.UMax = 0.5f; Range.VMin = 0.5f; Range.VMax = 1.0f;
+		}
+		else if (Kind.Equals(TEXT("5321")) || Kind.Equals(TEXT("533"))) // 횡단보도 / 고원식횡단보도
+		{
+			Range.UMin = 0.8f; Range.UMax = 1.0f; Range.VMin = 0.0f; Range.VMax = 1.0f;
+			Range.TargetWidth = 0.0f; Range.TargetHeight = 0.0f;
+		}
+		else if (Kind.Equals(TEXT("534"))) // 자전거횡단보도
+		{
+			Range.UMin = 0.8f; Range.UMax = 1.0f; Range.VMin = 0.0f; Range.VMax = 1.0f;
+			Range.TargetWidth = 0.0f; Range.TargetHeight = 0.0f;
+		}
+
+		return Range;
+	};
+
+	UE::Geometry::FDynamicMeshUVOverlay* UVOverlay = NativeMesh.Attributes()->PrimaryUV();
+
+	for (FHDMapB3MarkRow* Row : TargetRows)
+	{
+		if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 2) continue;
+
+		// ⚠️ [정차금지대 524] 메쉬 생성 스킵 필터링
+		if (Row->Kind.Equals(TEXT("524")))
+		{
+			continue;
+		}
+
+		// 월드 좌표 변환
+		TArray<FVector> WorldPoints;
+		WorldPoints.Reserve(Row->Points.Num());
+		for (const FVector& Pt : Row->Points)
+		{
+			WorldPoints.Add(VisTransform.TransformPosition(Pt));
+		}
+
+		// 닫힌 루프(다각형) 판정
+		bool bIsClosed = WorldPoints.Num() >= 3 && (FVector::Dist2D(WorldPoints[0], WorldPoints.Last()) < WeldDistance);
+
+		if (bIsClosed)
+		{
+			// 1. Heading 방향 및 Right 방향 계산
+			FVector Heading = FVector::ForwardVector;
+			FVector Right = FVector::RightVector;
+			bool bHeadingFound = false;
+
+			// 다각형의 중심점(Centroid) 계산
+			FVector Centroid = FVector::ZeroVector;
+			for (const FVector& Pt : WorldPoints)
+			{
+				Centroid += Pt;
+			}
+			if (WorldPoints.Num() > 0)
+			{
+				Centroid /= (float)WorldPoints.Num();
+			}
+
+			// 소속 링크(A2_LINK) 정보를 확인하여 방향 정렬 적용
+			FHDMapA2LinkRow* FoundLinkRow = nullptr;
+			if (VisualizerActor && VisualizerActor->DT_A2_Link)
+			{
+				if (!Row->LinkID.IsEmpty())
+				{
+					FoundLinkRow = VisualizerActor->DT_A2_Link->FindRow<FHDMapA2LinkRow>(
+						FName(*Row->LinkID), TEXT("HDMapMeshGen_MarkLinkSearch")
+					);
+				}
+
+				// 횡단보도(5321, 533, 534) 등 LinkID가 없거나 검색 실패 시, 주변의 가장 가까운 링크 방향 자동 정렬 (공간 탐색)
+				if (!FoundLinkRow)
+				{
+					TArray<FHDMapA2LinkRow*> AllLinkRows;
+					VisualizerActor->DT_A2_Link->GetAllRows<FHDMapA2LinkRow>(TEXT(""), AllLinkRows);
+
+					float BestGlobalDistSq = FLT_MAX;
+					FHDMapA2LinkRow* BestLinkRow = nullptr;
+
+					for (FHDMapA2LinkRow* TempLink : AllLinkRows)
+					{
+						if (!TempLink || TempLink->Points.Num() < 2) continue;
+
+						for (int32 idx = 0; idx < TempLink->Points.Num() - 1; ++idx)
+						{
+							FVector P0 = VisTransform.TransformPosition(TempLink->Points[idx]);
+							FVector P1 = VisTransform.TransformPosition(TempLink->Points[idx + 1]);
+
+							FVector Seg = P1 - P0;
+							FVector ToCentroid = Centroid - P0;
+
+							float SegLenSq = Seg.SizeSquared2D();
+							float T = 0.0f;
+							if (SegLenSq > 1e-4f)
+							{
+								T = FVector::DotProduct(Seg, ToCentroid) / SegLenSq;
+								T = FMath::Clamp(T, 0.0f, 1.0f);
+							}
+
+							FVector ClosestPt = P0 + Seg * T;
+							float DistSq = FVector::DistSquaredXY(Centroid, ClosestPt);
+
+							if (DistSq < BestGlobalDistSq)
+							{
+								BestGlobalDistSq = DistSq;
+								BestLinkRow = TempLink;
+							}
+						}
+					}
+
+					// 최대 50m(5000cm) 이내의 링크가 존재할 경우 매핑
+					if (BestGlobalDistSq < 5000.f * 5000.f)
+					{
+						FoundLinkRow = BestLinkRow;
+					}
+				}
+
+				if (FoundLinkRow && FoundLinkRow->Points.Num() >= 2)
+				{
+					// 다각형 중심과 가장 가까운 링크의 세그먼트 선분 찾기
+					float MinDistSq = FLT_MAX;
+					FVector BestDir = FVector::ForwardVector;
+
+					for (int32 idx = 0; idx < FoundLinkRow->Points.Num() - 1; ++idx)
+					{
+						FVector P0 = VisTransform.TransformPosition(FoundLinkRow->Points[idx]);
+						FVector P1 = VisTransform.TransformPosition(FoundLinkRow->Points[idx + 1]);
+
+						FVector Seg = P1 - P0;
+						FVector ToCentroid = Centroid - P0;
+
+						float SegLenSq = Seg.SizeSquared2D();
+						float T = 0.0f;
+						if (SegLenSq > 1e-4f)
+						{
+							T = FVector::DotProduct(Seg, ToCentroid) / SegLenSq;
+							T = FMath::Clamp(T, 0.0f, 1.0f);
+						}
+
+						FVector ClosestPt = P0 + Seg * T;
+						float DistSq = FVector::DistSquaredXY(Centroid, ClosestPt);
+
+						if (DistSq < MinDistSq)
+						{
+							MinDistSq = DistSq;
+							BestDir = Seg.GetSafeNormal2D();
+						}
+					}
+
+					if (!BestDir.IsNearlyZero())
+					{
+						Heading = BestDir;
+						bHeadingFound = true;
+					}
+				}
+			}
+
+			// 링크 정보를 찾을 수 없는 경우: 다각형 외곽 에지 기반 Fallback 계산 로직
+			if (!bHeadingFound && WorldPoints.Num() >= 3)
+			{
+				FVector Edge0 = WorldPoints[1] - WorldPoints[0];
+				FVector Edge1 = WorldPoints[2] - WorldPoints[1];
+				
+				float Len0 = Edge0.Size2D();
+				float Len1 = Edge1.Size2D();
+
+				if (Len1 > Len0)
+				{
+					Heading = Edge1.GetSafeNormal2D();
+				}
+				else
+				{
+					Heading = Edge0.GetSafeNormal2D();
+				}
+
+				if (Heading.IsNearlyZero())
+				{
+					Heading = FVector::ForwardVector;
+				}
+
+				// 정점 배열의 시작과 끝 흐름을 참조하여 180도 뒤집힘 방지
+				FVector FlowDir = (WorldPoints[WorldPoints.Num() - 2] - WorldPoints[0]).GetSafeNormal2D();
+				if (FVector::DotProduct(Heading, FlowDir) < 0.f)
+				{
+					Heading = -Heading;
+				}
+			}
+
+			Right = FVector::CrossProduct(FVector::UpVector, Heading).GetSafeNormal2D();
+
+			// 2. 오버라이드 확인 및 투영 축(Heading, Right) 회전 적용
+			FMarkUVRange Range = GetUVRangeByKind(Row->Kind);
+			bool bIsCrosswalk = Row->Kind.Equals(TEXT("5321")) || Row->Kind.Equals(TEXT("533")) || Row->Kind.Equals(TEXT("534"));
+			bool bFinalFlipV = Range.bFlipV;
+			bool bFinalRotate90 = Range.bRotate90;
+			float FinalRotationAngle = 0.0f;
+			float FinalTilingX = 1.0f;
+			float FinalTilingY = 1.0f;
+
+			if (MarkFlipOverrides.Contains(Row->ID))
+			{
+				bFinalFlipV = MarkFlipOverrides[Row->ID].bFlipV;
+				bFinalRotate90 = MarkFlipOverrides[Row->ID].bRotate90;
+				FinalRotationAngle = MarkFlipOverrides[Row->ID].RotationAngle;
+				FinalTilingX = MarkFlipOverrides[Row->ID].TilingX;
+				FinalTilingY = MarkFlipOverrides[Row->ID].TilingY;
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Mark ID '%s' Overridden. FlipV: %d, Rotate90: %d, Angle: %.2f, Tiling: %.2f, %.2f"), 
+					*Row->ID, bFinalFlipV ? 1 : 0, bFinalRotate90 ? 1 : 0, FinalRotationAngle, FinalTilingX, FinalTilingY);
+			}
+
+			// 임의 회전 각도가 있는 경우, 투영 방향 축 자체를 회전시켜 로컬 좌표계 정렬
+			if (!FMath::IsNearlyZero(FinalRotationAngle))
+			{
+				Heading = Heading.RotateAngleAxis(FinalRotationAngle, FVector::UpVector);
+				Right = FVector::CrossProduct(FVector::UpVector, Heading).GetSafeNormal2D();
+			}
+
+			// 3. 로컬 2D 좌표 변환 및 로컬 AABB 계산
+			TArray<FVector2D> LocalPts;
+			LocalPts.Reserve(WorldPoints.Num());
+			FBox2D LocalBox(EForceInit::ForceInit);
+
+			for (const FVector& Pt : WorldPoints)
+			{
+				FVector2D LocalPt(FVector::DotProduct(Pt, Right), FVector::DotProduct(Pt, Heading));
+				LocalPts.Add(LocalPt);
+				LocalBox += LocalPt;
+			}
+
+			float SizeX = LocalBox.Max.X - LocalBox.Min.X;
+			float SizeY = LocalBox.Max.Y - LocalBox.Min.Y;
+			if (SizeX < 0.1f) SizeX = 1.0f;
+			if (SizeY < 0.1f) SizeY = 1.0f;
+
+			// 4. 정점 추가 및 UV 계산
+			TArray<int32> VertexIndices;
+			TArray<int32> UVIndices;
+
+			for (int32 i = 0; i < WorldPoints.Num(); ++i)
+			{
+				FVector SnapPt = WorldPoints[i];
+				AdjustZ(SnapPt, Row->ID);
+
+				int32 VIdx = NativeMesh.AppendVertex(SnapPt);
+				VertexIndices.Add(VIdx);
+
+				// 세로(Y축)는 다각형 세로 길이에 맞춰 100% 꽉 채우기 (Stretch로 잘림 방지)
+				float tY = (LocalPts[i].Y - LocalBox.Min.Y) / SizeY;
+
+				// 가로(X축)도 다각형 가로 길이에 맞춰 100% 꽉 채우기 (Stretch로 좌우 맞춤 및 잘림 방지)
+				float tX = (LocalPts[i].X - LocalBox.Min.X) / SizeX;
+
+				float UStart = Range.UMin;
+				float UEnd = Range.UMax;
+				float VStart = Range.VMin;
+				float VEnd = Range.VMax;
+
+				// 반전 여부에 따라 tX, tY 투영축 반전 처리
+				float tX_Final = tX;
+				float tY_Final = bFinalFlipV ? tY : (1.0f - tY);
+
+				// 90도 회전 처리 (중심 0.5 기준 시계방향 90도 회전)
+				if (bFinalRotate90)
+				{
+					float Temp = tX_Final;
+					tX_Final = tY_Final;
+					tY_Final = 1.0f - Temp;
+				}
+
+				float U = 0.0f;
+				float V = 0.0f;
+
+				if (bIsCrosswalk)
+				{
+					// 횡단보도는 전용 Wrap 머티리얼을 사용하므로, Frac/Clamp 없이 타일링 수치를 단순 곱해 전달 (GPU Wrap 적용)
+					U = tX_Final * FinalTilingX;
+					V = tY_Final * FinalTilingY;
+				}
+				else
+				{
+					// 일반 노면 기호는 아틀라스 서브 영역 내에서만 안전하게 Frac 및 Clamp 처리
+					if (FinalTilingX != 1.0f)
+					{
+						tX_Final = FMath::Frac(tX_Final * FinalTilingX);
+					}
+					if (FinalTilingY != 1.0f)
+					{
+						tY_Final = FMath::Frac(tY_Final * FinalTilingY);
+					}
+
+					float tX_Clamped = FMath::Clamp(tX_Final, 0.0f, 1.0f);
+					float tY_Clamped = FMath::Clamp(tY_Final, 0.0f, 1.0f);
+
+					U = UStart + tX_Clamped * (UEnd - UStart);
+					V = VStart + tY_Clamped * (VEnd - VStart);
+				}
+
+				int32 UVIdx = UVOverlay->AppendElement(FVector2f(U, V));
+				UVIndices.Add(UVIdx);
+			}
+
+			// 4. Delaunay 삼각분할
+			TArray<FIntVector> Triangles2D;
+			// 닫힌 루프이므로 중복된 마지막 점은 제외하고 분할용 정점 배열 구성
+			TArray<FVector> PolyVerts = WorldPoints;
+			if (PolyVerts.Num() > 1)
+			{
+				PolyVerts.RemoveAt(PolyVerts.Num() - 1);
+			}
+
+			if (RunDelaunayTriangulation(PolyVerts, Triangles2D))
+			{
+				for (const FIntVector& Tri : Triangles2D)
+				{
+					FVector V0 = PolyVerts[Tri.X];
+					FVector V1 = PolyVerts[Tri.Y];
+					FVector V2 = PolyVerts[Tri.Z];
+
+					FVector TriCentroid = (V0 + V1 + V2) / 3.0f;
+					FVector2D Centroid2D(TriCentroid.X, TriCentroid.Y);
+
+					if (IsPointInPolygon2D(Centroid2D, PolyVerts))
+					{
+						FVector E0 = V1 - V0;
+						FVector E1 = V2 - V0;
+						FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+						int32 FinalY = Tri.Y;
+						int32 FinalZ = Tri.Z;
+						if (CrossVal.Z > 0.f)
+						{
+							FinalY = Tri.Z;
+							FinalZ = Tri.Y;
+						}
+
+						int32 G_V0 = VertexIndices[Tri.X];
+						int32 G_V1 = VertexIndices[FinalY];
+						int32 G_V2 = VertexIndices[FinalZ];
+
+						if (G_V0 != G_V1 && G_V1 != G_V2 && G_V2 != G_V0)
+						{
+							int32 NewTri = NativeMesh.AppendTriangle(G_V0, G_V1, G_V2);
+							if (NewTri >= 0)
+							{
+								if (MaterialIDs)
+								{
+									MaterialIDs->SetValue(NewTri, bIsCrosswalk ? 1 : 0);
+								}
+								int32 G_UV0 = UVIndices[Tri.X];
+								int32 G_UV1 = UVIndices[FinalY];
+								int32 G_UV2 = UVIndices[FinalZ];
+								UVOverlay->SetTriangle(NewTri, FIntVector(G_UV0, G_UV1, G_UV2));
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// DynamicMesh에 최종 메쉬 저장
+	DynMeshComp->GetDynamicMesh()->SetMesh(NativeMesh);
+
+	int32 FinalVertexCount = NativeMesh.VertexCount();
+	int32 FinalTriangleCount = NativeMesh.TriangleCount();
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Mark Mesh Generation Completed. Vertices: %d, Triangles: %d"),
+		FinalVertexCount, FinalTriangleCount);
+}
+
+void AHDMapMeshGenerator::SaveMarkToStaticMeshAsset()
+{
+	if (!OutputMarkDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: OutputMarkDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputMarkDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh || DynMesh->IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: DynamicMesh is empty. Please generate mark mesh first."));
+		return;
+	}
+
+	if (SaveMarkAssetPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SaveMarkAssetPath is empty. Please define a path like /Game/HDMap/SM_NamsanMark."));
+		return;
+	}
+
+	FString PackagePath = SaveMarkAssetPath;
+	FString AssetName;
+	int32 LastSlashIndex;
+	if (PackagePath.FindLastChar('/', LastSlashIndex))
+	{
+		AssetName = PackagePath.RightChop(LastSlashIndex + 1);
+	}
+	else
+	{
+		AssetName = PackagePath;
+		PackagePath = TEXT("/Game/") + AssetName;
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create package at %s"), *PackagePath);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* TargetStaticMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, *PackagePath));
+	if (!TargetStaticMesh)
+	{
+		TargetStaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!TargetStaticMesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create or load StaticMesh object."));
+		return;
+	}
+
+	TargetStaticMesh->GetStaticMaterials().Empty();
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(MarkAtlasMaterial, TEXT("MarkAtlasMaterial")));
+	TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(CrosswalkMaterial, TEXT("CrosswalkMaterial")));
+
+	FGeometryScriptCopyMeshToAssetOptions CopyOptions;
+	CopyOptions.bEnableRecomputeNormals = true;
+	CopyOptions.bEnableRecomputeTangents = true;
+	CopyOptions.bEnableRemoveDegenerates = true;
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+
+	EGeometryScriptOutcomePins Outcome;
+	
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+		DynMesh,
+		TargetStaticMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		FAssetRegistryModule::AssetCreated(TargetStaticMesh);
+		TargetStaticMesh->MarkPackageDirty();
+		
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied and saved StaticMesh Asset at: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
+}
+
+void AHDMapMeshGenerator::CopyTargetRoadToDynamicMesh()
+{
+	if (!TargetRoadStaticMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: TargetRoadStaticMeshActor is not specified."));
+		return;
+	}
+
+	if (!OutputDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: OutputDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UStaticMeshComponent* SMComp = TargetRoadStaticMeshActor->GetStaticMeshComponent();
+	if (!SMComp || !SMComp->GetStaticMesh())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: StaticMeshComponent or StaticMesh is invalid."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: OutputDynamicMeshActor does not have a DynamicMeshComponent."));
+		return;
+	}
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+
+	DynMesh->Reset();
+
+	UStaticMesh* RoadSM = SMComp->GetStaticMesh();
+	FGeometryScriptCopyMeshFromAssetOptions CopyOptions;
+	FGeometryScriptMeshReadLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+	EGeometryScriptOutcomePins Outcome;
+
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshFromStaticMesh(
+		RoadSM,
+		DynMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		// 월드 트랜스폼 동기화
+		OutputDynamicMeshActor->SetActorTransform(TargetRoadStaticMeshActor->GetActorTransform());
+		
+		// 머티리얼 복사
+		DynMeshComp->SetNumMaterials(SMComp->GetNumMaterials());
+		for (int32 i = 0; i < SMComp->GetNumMaterials(); ++i)
+		{
+			DynMeshComp->SetMaterial(i, SMComp->GetMaterial(i));
+		}
+
+		// --- B3 Stamp (Direct Z-Snapped Append) 각인 처리 ---
+		if (bEnableB3Stamping && VisualizerActor)
+		{
+			UDataTable* B3MarkTable = VisualizerActor->DT_B3_Mark;
+			if (B3MarkTable)
+			{
+				TArray<FHDMapB3MarkRow*> B3Rows;
+				B3MarkTable->GetAllRows<FHDMapB3MarkRow>(TEXT("HDMapMeshGen_B3Stamp"), B3Rows);
+				
+				UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: Processing %d B3 Marks for stamping..."), B3Rows.Num());
+
+				FTransform VisTransform = VisualizerActor->GetActorTransform();
+				FTransform TargetActorTransform = OutputDynamicMeshActor->GetActorTransform();
+
+				// 기존 도로 폴리곤 참조용 임시 복사본 생성 후 원본 리셋 (나머지 폴리곤 삭제 효과)
+				UDynamicMesh* TempRoadMesh = NewObject<UDynamicMesh>();
+				if (TempRoadMesh)
+				{
+					TempRoadMesh->GetMeshPtr()->Copy(*DynMesh->GetMeshPtr());
+					DynMesh->Reset();
+
+					UE::Geometry::FDynamicMesh3* NativeMesh = DynMesh->GetMeshPtr();
+					if (NativeMesh)
+					{
+						NativeMesh->EnableAttributes();
+						if (!NativeMesh->Attributes()->GetMaterialID())
+						{
+							NativeMesh->Attributes()->EnableMaterialID();
+						}
+						auto* MaterialIDs = NativeMesh->Attributes()->GetMaterialID();
+
+						#if WITH_EDITOR
+						FScopedSlowTask SlowTask(B3Rows.Num(), FText::FromString(TEXT("B3 노면 표시 각인 중...")));
+						SlowTask.MakeDialog(true); // 취소 버튼 활성화
+						#endif
+
+						int32 StampedCount = 0;
+						for (FHDMapB3MarkRow* Row : B3Rows)
+						{
+							if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 3) continue;
+
+							// ⚠️ [정차금지대 524] 스킵 필터링
+							if (Row->Kind.Equals(TEXT("524"))) continue;
+
+							#if WITH_EDITOR
+							SlowTask.EnterProgressFrame(1.f, FText::Format(
+								FText::FromString(TEXT("B3 노면 각인 중... {0} ({1}/{2})")),
+								FText::FromString(Row->ID),
+								FText::AsNumber(++StampedCount),
+								FText::AsNumber(B3Rows.Num())
+							));
+							if (SlowTask.ShouldCancel())
+							{
+								UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: B3 stamping cancelled by user."));
+								break;
+							}
+							#endif
+
+							// 1. 다각형 월드 좌표 수집
+							TArray<FVector> WorldPoints;
+							for (const FVector& Pt : Row->Points)
+							{
+								WorldPoints.Add(VisTransform.TransformPosition(Pt));
+							}
+
+							// 마지막 중복 정점 제거
+							if (WorldPoints.Num() > 1 && FVector::DistSquared2D(WorldPoints[0], WorldPoints.Last()) < WeldDistance * WeldDistance)
+							{
+								WorldPoints.RemoveAt(WorldPoints.Num() - 1);
+							}
+
+							if (WorldPoints.Num() < 3) continue;
+
+							// 2. 도로 곡률 고도(Z) 획득 및 정점 로컬 변환
+							TArray<int32> VertexIndices;
+							VertexIndices.Reserve(WorldPoints.Num());
+							TArray<FVector> LocalPoints;
+							LocalPoints.Reserve(WorldPoints.Num());
+
+							for (int32 idx = 0; idx < WorldPoints.Num(); ++idx)
+							{
+								FVector WP = WorldPoints[idx];
+								
+								// 복사해 둔 TempRoadMesh의 Z 높이를 해당 XY 좌표에서 획득하여 밀착시킴
+								float SnapZ = GetRoadMeshZ(TempRoadMesh, FVector2D(WP.X, WP.Y), WP.Z, TargetActorTransform);
+								WP.Z = SnapZ + B3StampHeight; // 미세 오프셋 반영
+
+								FVector LocalPt = TargetActorTransform.InverseTransformPosition(WP);
+								LocalPoints.Add(LocalPt);
+
+								int32 VIdx = NativeMesh->AppendVertex(LocalPt);
+								VertexIndices.Add(VIdx);
+							}
+
+							// 3. 2D 델로네 삼각분할 수행 및 삼각형 직접 주입
+							TArray<FIntVector> Triangles2D;
+							if (RunDelaunayTriangulation(LocalPoints, Triangles2D))
+							{
+								for (const FIntVector& Tri : Triangles2D)
+								{
+									FVector V0 = LocalPoints[Tri.X];
+									FVector V1 = LocalPoints[Tri.Y];
+									FVector V2 = LocalPoints[Tri.Z];
+
+									FVector TriCentroid = (V0 + V1 + V2) / 3.0f;
+									FVector2D Centroid2D(TriCentroid.X, TriCentroid.Y);
+
+									if (IsPointInPolygon2D(Centroid2D, LocalPoints))
+									{
+										FVector E0 = V1 - V0;
+										FVector E1 = V2 - V0;
+										FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+										int32 FinalY = Tri.Y;
+										int32 FinalZ = Tri.Z;
+										if (CrossVal.Z > 0.f)
+										{
+											FinalY = Tri.Z;
+											FinalZ = Tri.Y;
+										}
+
+										int32 G_V0 = VertexIndices[Tri.X];
+										int32 G_V1 = VertexIndices[FinalY];
+										int32 G_V2 = VertexIndices[FinalZ];
+
+										if (G_V0 != G_V1 && G_V1 != G_V2 && G_V2 != G_V0)
+										{
+											int32 NewTri = NativeMesh->AppendTriangle(G_V0, G_V1, G_V2);
+											if (NewTri >= 0 && MaterialIDs)
+											{
+												MaterialIDs->SetValue(NewTri, 1); // 노면 표시 머티리얼 ID 할당
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		DynMeshComp->NotifyMeshUpdated();
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied static mesh '%s' to OutputDynamicMeshActor."), *RoadSM->GetName());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: Failed to copy static mesh."));
 	}
 }
