@@ -39,12 +39,22 @@ struct FBossHechiManAttackStruct
 	
 	UPROPERTY(EditAnywhere, Category = "자체설정")
 	float ThrowMagicBallDelay = 3.0f;
+	
+	UPROPERTY(EditAnywhere, Category = "자체설정")
+	float ChangePostProcessDelay = 2.0f;
+	
 };
 
 UCLASS()
 class ENEMY_API AHechi : public ABaseBossEnemy
 {
 	GENERATED_BODY()
+	
+	// 3초마다 실행될 함수 (내용은 나중에 채우시면 됩니다)
+	void MyThreeSecondRepeatingFunction();
+
+	// 타이머를 관리하기 위한 핸들 (나중에 타이머를 멈출 때 필요합니다)
+	FTimerHandle RepeatingTimerHandle;
 
 public:
 	AHechi();
@@ -63,11 +73,14 @@ public:
 	FHechiLogData HechiLogData;
 	
 	// 레이저가 나갈 씬 컴포넌트
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "자체설정")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	USceneComponent* LaserSpawnPoint;
 	// 오른손 씬 컴포넌트
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "자체설정")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	USceneComponent* RightHandPoint;
+	
+	// 포스트 프로세스 볼륨을 찾는 헬퍼 함수
+	void InitializePostProcessVolume();
 	
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
 	UAnimMontage* LaserAttackMontage;
@@ -135,15 +148,13 @@ public:
 	// 애님 노티파이에서 호출할 함수
 	UFUNCTION( BlueprintCallable )
 	void TeleportMoveToNextPoint();
-	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
-	class UParticleSystem* TeleportOutEffect;
 	UFUNCTION(BlueprintCallable)
 	void StartDisappear();
 	void EndDisappear();
 	// 타이머를 관리할 핸들 변수
 	FTimerHandle TeleportTimerHandle;
-	UPROPERTY(EditAnywhere, Category = "자체설정")
-	float DisappearDuration = 3.0f; 
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	float DisappearDuration = 4.0f; 
 	UFUNCTION( BlueprintCallable )
 	void SetMeshHidden();
 	UFUNCTION( BlueprintCallable )
@@ -160,6 +171,62 @@ public:
 	TSubclassOf<class ABaseEnemyProjectile> MagicBallProjectileClass;
 	UFUNCTION(BlueprintCallable)
 	void ShootMagickBall();
+	
+	// 특수 패턴 수행할 체력 비율 0 ~ 1
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	float ChangeMapHealthThreshold = 0.5f;
+	void StartChangeMapPattern();
+	bool bIsChangeMap = false;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	UAnimMontage* ChangeMapMontage;
+	UAnimMontage* PlayChangeMapMontage();
+	// 캐릭터 빨아들이는 거 플래그
+	UPROPERTY(BlueprintReadWrite, Category = "자체설정")
+	bool HandleCharacterTeleportFlag = false;
+	
+	UFUNCTION(BlueprintCallable)
+	void StartDisappearCharacter();
+	void EndDisappearCharacter();
+	FTimerHandle CharacterTeleportTimerHandle;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	class UParticleSystem* CharacterTeleportInEffect;
+	UFUNCTION(BlueprintCallable)
+	void PlayCharacterTeleportInEffect();
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TObjectPtr<class ATargetPoint> HechiTeleportPoint;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TObjectPtr<class ATargetPoint> CharacterTeleportPoint;
+	// 블루프린트 이벤트 그래프에 쓸 커스텀 이벤트
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
+	void ChangeMap();
+	UFUNCTION(BlueprintCallable)
+	void DisablePlayerInput();
+	UFUNCTION(BlueprintCallable)
+	void EnablePlayerInput();
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	class UNiagaraSystem* CharacterTeleportReadyEffect;
+	UFUNCTION(BlueprintCallable)
+	void PlayCharacterTeleportReadyEffect();
+	
+	UPROPERTY()
+	class APostProcessVolume* LevelPostProcessVolume;
+	// 에디터에서 포스트 프로세스 머터리얼(또는 인스턴스)들을 등록할 배열
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	TArray<class UMaterialInterface*> PostProcessMaterialArray;
+	void ChangePostProcessMaterialByIndex(int32 Index);
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	UAnimMontage* ChangePostProcessMontage;
+	UAnimMontage* PlayChangePostProcessMontage();
+	UFUNCTION(BlueprintCallable)
+	void RandomChangePostProcess();
+	int32 CurrentPostProcessIndex = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TSubclassOf<UCameraShakeBase> CameraShakeClass;
+	// 카메라를 흔드는 기능만 담당할 함수
+	void ShakeCamera();
+	FTimerHandle PostProcessLoopHandle;
+	UFUNCTION(BlueprintCallable)
+	void StartLoopPostProcessChange();
 	
 #if WITH_EDITOR
 	// 에디터에서 프로퍼티가 변경될 때 호출됩니다.
