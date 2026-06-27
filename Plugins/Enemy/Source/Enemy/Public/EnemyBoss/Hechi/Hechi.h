@@ -65,6 +65,7 @@ public:
 	virtual void Die();
 	virtual void AfterDieMontageEnd() override;
 	virtual void EndBattleLog() override;
+	virtual void Destroy();
 	
 	// 공격 가중치 구조체
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
