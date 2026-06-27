@@ -43,3 +43,5 @@ Python/
 # Local Private Assets
 Content/PrivateAssets/
 
+# Private Tasks & Local Data
+PrivateTasks/

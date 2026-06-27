@@ -11,6 +11,9 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
 #include "ShardsOfSeoul.h"
+#include <Character/SprintComp.h>
+
+#include "Character/GrappleComp.h"
 
 AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 {
@@ -48,6 +51,9 @@ AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
+	SprintComp = CreateDefaultSubobject<USprintComp>(TEXT("SprintComp"));
+	
+	GrappleComp = CreateDefaultSubobject<UGrappleComp>(TEXT("GrappleComp"));
 }
 
 void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -65,6 +71,16 @@ void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerI
 
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AShardsOfSeoulCharacter::Look);
+		
+		if (SprintComp)
+		{
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Started, SprintComp, &USprintComp::StartSprint);
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Completed, SprintComp, &USprintComp::StopSprint);
+		}
+		if (GrappleComp)
+		{
+			EnhancedInputComponent->BindAction(GrappleAction, ETriggerEvent::Started, GrappleComp, &UGrappleComp::Grapple);
+		}
 	}
 	else
 	{
@@ -92,22 +108,41 @@ void AShardsOfSeoulCharacter::Look(const FInputActionValue& Value)
 
 void AShardsOfSeoulCharacter::DoMove(float Right, float Forward)
 {
+	// 그래플 준비 중(몽타주 재생 중)이거나 비행 중일 때는 조작 무시
+	if (GrappleComp && GrappleComp->IsGrapplingOrPreparing())
+	{
+		return;
+	}
+
 	if (GetController() != nullptr)
 	{
-		// find out which way is forward
-		const FRotator Rotation = GetController()->GetControlRotation();
-		const FRotator YawRotation(0, Rotation.Yaw, 0);
+		if (IsClimbing)
+		{
+			// Upward/Downward movement based on forward input when climbing
+			AddMovementInput(FVector::UpVector, Forward);
+		}
+		else
+		{
+			// find out which way is forward
+			const FRotator Rotation = GetController()->GetControlRotation();
+			const FRotator YawRotation(0, Rotation.Yaw, 0);
 
-		// get forward vector
-		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+			// get forward vector
+			const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 
-		// get right vector 
-		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+			// get right vector 
+			const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
 
-		// add movement 
-		AddMovementInput(ForwardDirection, Forward);
-		AddMovementInput(RightDirection, Right);
+			// add movement 
+			AddMovementInput(ForwardDirection, Forward);
+			AddMovementInput(RightDirection, Right);
+		}
 	}
+}
+
+void AShardsOfSeoulCharacter::SetIsClimbing(bool bNewClimbing)
+{
+	IsClimbing = bNewClimbing;
 }
 
 void AShardsOfSeoulCharacter::DoLook(float Yaw, float Pitch)

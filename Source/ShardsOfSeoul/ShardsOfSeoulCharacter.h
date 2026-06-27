@@ -7,6 +7,8 @@
 #include "Logging/LogMacros.h"
 #include "ShardsOfSeoulCharacter.generated.h"
 
+class USprintComp;
+class UGrappleComp;
 class USpringArmComponent;
 class UCameraComponent;
 class UInputAction;
@@ -49,6 +51,12 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Input")
 	UInputAction* MouseLookAction;
 
+	UPROPERTY(EditAnywhere, Category="Input")
+	UInputAction* SprintAction;
+	
+	UPROPERTY(EditAnywhere, Category="Input")
+	UInputAction* GrappleAction;
+	
 public:
 
 	/** Constructor */
@@ -92,5 +100,21 @@ public:
 
 	/** Returns FollowCamera subobject **/
 	FORCEINLINE class UCameraComponent* GetFollowCamera() const { return FollowCamera; }
+	
+	UFUNCTION(BlueprintCallable, Category="State")
+	void SetIsClimbing(bool bNewClimbing);
+
+	UFUNCTION(BlueprintPure, Category="State")
+	FORCEINLINE bool GetIsClimbing() const { return IsClimbing; }
+	
+private:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	USprintComp* SprintComp;
+	
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	UGrappleComp* GrappleComp;
+	
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="State", meta = (AllowPrivateAccess = "true"))
+	bool IsClimbing = false;
 };
 
