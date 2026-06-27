@@ -174,6 +174,8 @@ def extract_type_from_filename(filename):
     base = norm_filename.split('.')[0].upper()
     if "도로 병합" in norm_filename or "도로병합" in norm_filename or "도로 병합" in filename or "도로병합" in filename:
         return "HDMapData"
+    if "건물" in norm_filename or "BUILDING" in norm_filename or "건물" in filename or "BUILDING" in filename:
+        return "HDMapBuilding"
         
     parts = base.split('_')
     
@@ -254,14 +256,14 @@ def process_hdmap_files(input_dir, output_json, origin_x=None, origin_y=None, or
         filtered_files = []
         for f in all_files:
             norm_f = unicodedata.normalize('NFC', f)
-            if f.startswith(prefix) or "도로 병합" in norm_f or "도로병합" in norm_f or "도로 병합" in f or "도로병합" in f:
+            if f.startswith(prefix) or "도로 병합" in norm_f or "도로병합" in norm_f or "도로 병합" in f or "도로병합" in f or "건물" in norm_f or "BUILDING" in norm_f or "건물" in f or "BUILDING" in f:
                 filtered_files.append(f)
         all_files = filtered_files
         print(f"Filtering files with prefix: '{prefix}' (Found {len(all_files)} files)")
     
     # 1. 포맷 판단 및 로드 (SHP와 GPKG 파일이 혼재된 경우 개별 처리)
-    # 12개 속성 레이어 맵 초기화
-    layer_keys = ("A1", "A2", "A3", "A4", "B2", "B3", "C1", "C3", "C4", "C5", "C6", "HDMapData")
+    # 13개 속성 레이어 맵 초기화
+    layer_keys = ("A1", "A2", "A3", "A4", "B2", "B3", "C1", "C3", "C4", "C5", "C6", "HDMapData", "HDMapBuilding")
     layer_records = {k: [] for k in layer_keys}
     
     print(f"Start parsing {len(all_files)} files in: {input_path}")
@@ -389,6 +391,52 @@ def process_hdmap_files(input_dir, output_json, origin_x=None, origin_y=None, or
                 conn.close()
             except Exception as e:
                 print(f"Error reading GPKG {filename}: {e}")
+
+    # ⚠️ 남산 건물.shp 강제 병합 장치 (도로 폴더에 없어도 자동 통합)
+    user_profile = Path(os.environ.get('USERPROFILE', r"C:\Users\user"))
+    namsan_shp = user_profile / "Desktop" / "남산 지형" / "남산 건물.shp"
+    if namsan_shp.exists() and shapefile:
+        try:
+            print(f"Force merging building file from: {namsan_shp}")
+            sf = shapefile.Reader(str(namsan_shp), encoding='cp949')
+            shapes = sf.shapes()
+            records = sf.records()
+            fields = [f[0] for f in sf.fields[1:]]
+            
+            id_idx = 0
+            for idx, f_name in enumerate(fields):
+                if f_name.upper() in ('ID', 'LINKID', 'NODEID', 'LINEID', 'SECTIONID'):
+                    id_idx = idx
+                    break
+                    
+            for i, (shape, record) in enumerate(zip(shapes, records)):
+                rec_id = str(record[id_idx]) if id_idx < len(record) else f"HDMapBuilding_{i}"
+                if not rec_id.strip():
+                    rec_id = f"HDMapBuilding_{i}"
+                    
+                properties = {}
+                for idx, f_name in enumerate(fields):
+                    if idx < len(record):
+                        properties[f_name] = record[idx]
+                        
+                raw_pts = shape.points
+                has_z = hasattr(shape, 'z') and len(shape.z) == len(raw_pts)
+                
+                points_3d = []
+                for j, pt in enumerate(raw_pts):
+                    x, y = pt[0], pt[1]
+                    z = shape.z[j] if has_z else 0.0
+                    points_3d.append((x, y, z))
+                    
+                if points_3d:
+                    layer_records["HDMapBuilding"].append({
+                        "id": rec_id,
+                        "properties": properties,
+                        "raw_points": points_3d
+                    })
+            print(f"Successfully force-merged {len(shapes)} buildings from {namsan_shp}")
+        except Exception as e:
+            print(f"Error merging building file: {e}")
                 
     has_data = any(len(layer_records[k]) > 0 for k in layer_keys)
     if not has_data:
@@ -461,6 +509,9 @@ def process_hdmap_files(input_dir, output_json, origin_x=None, origin_y=None, or
             metadata_item["PostType"] = ""
         elif k == "HDMapData":
             metadata_item["Type"] = ""
+        elif k == "HDMapBuilding":
+            metadata_item["Usage"] = ""
+            metadata_item["FloorCount"] = 0
             
         json_data.append(metadata_item)
         
@@ -579,11 +630,16 @@ def process_hdmap_files(input_dir, output_json, origin_x=None, origin_y=None, or
                 item_data["PostType"] = get_field_val(props, ["PostType", "TYPE", "POST_TYPE", "KIND"])
             elif k == "HDMapData":
                 item_data["Type"] = get_field_val(props, ["Type", "TYPE", "KIND"], "")
+            elif k == "HDMapBuilding":
+                item_data["Usage"] = get_field_val(props, ["용도", "yongdo", "use", "usage", "KIND"])
+                item_data["FloorCount"] = get_field_val_int(props, ["층수", "floor", "floors", "level", "FLR", "FLR_CO"], 1)
                 
             json_data.append(item_data)
             
         if k == "HDMapData":
             layer_output_path = output_dir / "HDMapData.json"
+        elif k == "HDMapBuilding":
+            layer_output_path = output_dir / "HDMapBuilding.json"
         else:
             layer_output_path = output_dir / f"HDMap_{k}.json"
             

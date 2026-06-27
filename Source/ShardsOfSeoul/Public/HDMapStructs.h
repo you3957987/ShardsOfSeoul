@@ -282,3 +282,25 @@ public:
 	FHDMapSidewalkRow() : ID(TEXT("")), UFID(TEXT("")) {}
 };
 
+/** 건물 정보 레이어 구조체 (ID, Usage, FloorCount, Points) */
+USTRUCT(BlueprintType)
+struct FHDMapBuildingRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString ID;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	FString Usage;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	int32 FloorCount;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap")
+	TArray<FVector> Points;
+
+	FHDMapBuildingRow() : ID(TEXT("")), Usage(TEXT("")), FloorCount(1) {}
+};
+

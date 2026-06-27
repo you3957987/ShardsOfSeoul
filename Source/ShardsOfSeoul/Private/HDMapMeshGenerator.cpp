@@ -4722,70 +4722,11 @@ void AHDMapMeshGenerator::CopyTargetRoadToDynamicMesh()
 	}
 }
 
-// EUC-KR 및 UTF-8 바이트를 직접 대조하여 한글 필드명 매칭 여부를 검사하는 헬퍼 함수
-static bool MatchFieldName(const char* FieldNameRaw, const FString& TargetName)
-{
-	FString FieldName = FString(ANSI_TO_TCHAR(FieldNameRaw)).TrimStartAndEnd();
-	if (FieldName.Equals(TargetName, ESearchCase::IgnoreCase)) return true;
-
-	if (TargetName.Equals(TEXT("용도")))
-	{
-		if (FieldName.Equals(TEXT("yongdo"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("use"), ESearchCase::IgnoreCase) ||
-			FieldName.Contains(TEXT("usage"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("KIND"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("KND"), ESearchCase::IgnoreCase))
-		{
-			return true;
-		}
-
-		const uint8 CP949_Yongdo[] = { 0xC5, 0xD9, 0xB5, 0xC5, 0 };
-		const uint8 UTF8_Yongdo[] = { 0xEC, 0x9A, 0xA9, 0xEB, 0x8F, 0x84, 0 };
-
-		if (FCStringAnsi::Stricmp(FieldNameRaw, (const char*)CP949_Yongdo) == 0 ||
-			FCStringAnsi::Strnicmp(FieldNameRaw, (const char*)UTF8_Yongdo, 6) == 0)
-		{
-			return true;
-		}
-	}
-	else if (TargetName.Equals(TEXT("층수")))
-	{
-		if (FieldName.Equals(TEXT("floor"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("floors"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("level"), ESearchCase::IgnoreCase) ||
-			FieldName.Contains(TEXT("levels"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("FLR"), ESearchCase::IgnoreCase) ||
-			FieldName.Equals(TEXT("FLR_CO"), ESearchCase::IgnoreCase))
-		{
-			return true;
-		}
-
-		const uint8 CP949_Cheungsu[] = { 0xC3, 0xFE, 0xC6, 0xE2, 0 };
-		const uint8 UTF8_Cheungsu[] = { 0xEC, 0xB8, 0xB5, 0xEC, 0x88, 0x98, 0 };
-
-		if (FCStringAnsi::Stricmp(FieldNameRaw, (const char*)CP949_Cheungsu) == 0 ||
-			FCStringAnsi::Strnicmp(FieldNameRaw, (const char*)UTF8_Cheungsu, 6) == 0)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-static int32 SwapEndian(int32 Value)
-{
-	return ((Value >> 24) & 0x000000FF) |
-		   ((Value >> 8)  & 0x0000FF00) |
-		   ((Value << 8)  & 0x00FF0000) |
-		   ((Value << 24) & 0xFF000000);
-}
-
 void AHDMapMeshGenerator::GenerateBuildingMesh()
 {
-	if (!VisualizerActor)
+	if (!DT_Building)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is NULL!"));
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] DT_Building is NULL!"));
 		return;
 	}
 
@@ -4795,128 +4736,9 @@ void AHDMapMeshGenerator::GenerateBuildingMesh()
 		return;
 	}
 
-	TArray<uint8> ShpData;
-	TArray<uint8> DbfData;
-	if (!FFileHelper::LoadFileToArray(ShpData, *BuildingShpFilePath))
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to load SHP file: %s"), *BuildingShpFilePath);
-		return;
-	}
-	if (!FFileHelper::LoadFileToArray(DbfData, *BuildingDbfFilePath))
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to load DBF file: %s"), *BuildingDbfFilePath);
-		return;
-	}
-
-	if (DbfData.Num() < 32)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Invalid DBF file size (too small)."));
-		return;
-	}
-
-	int32 NumRecords = *reinterpret_cast<const int32*>(&DbfData[4]);
-	int16 HeaderBytes = *reinterpret_cast<const int16*>(&DbfData[8]);
-	int16 RecordBytes = *reinterpret_cast<const int16*>(&DbfData[10]);
-
-	int32 NumFields = (HeaderBytes - 33) / 32;
-	if (DbfData.Num() < HeaderBytes)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] DBF HeaderBytes is larger than file size."));
-		return;
-	}
-
-	int32 UsageFieldOffset = -1;
-	int32 UsageFieldLen = 0;
-	int32 FloorFieldOffset = -1;
-	int32 FloorFieldLen = 0;
-
-	int32 CurrentFieldOffset = 1;
-
-	for (int32 FieldIdx = 0; FieldIdx < NumFields; ++FieldIdx)
-	{
-		int32 DescOffset = 32 + FieldIdx * 32;
-		if (DescOffset + 32 > DbfData.Num()) break;
-
-		const char* FieldNameRaw = reinterpret_cast<const char*>(&DbfData[DescOffset]);
-		uint8 FieldLength = DbfData[DescOffset + 16];
-
-		if (MatchFieldName(FieldNameRaw, TEXT("용도")))
-		{
-			UsageFieldOffset = CurrentFieldOffset;
-			UsageFieldLen = FieldLength;
-		}
-		else if (MatchFieldName(FieldNameRaw, TEXT("층수")))
-		{
-			FloorFieldOffset = CurrentFieldOffset;
-			FloorFieldLen = FieldLength;
-		}
-
-		CurrentFieldOffset += FieldLength;
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] DBF Parsed. Records: %d, UsageOffset: %d (Len:%d), FloorOffset: %d (Len:%d)"),
-		NumRecords, UsageFieldOffset, UsageFieldLen, FloorFieldOffset, FloorFieldLen);
-
-	struct FBuildingAttribute
-	{
-		FString Usage;
-		int32 FloorCount = 1;
-	};
-	TArray<FBuildingAttribute> Attributes;
-	Attributes.Reserve(NumRecords);
-
-	for (int32 RecIdx = 0; RecIdx < NumRecords; ++RecIdx)
-	{
-		int32 RecOffset = HeaderBytes + RecIdx * RecordBytes;
-		if (RecOffset + RecordBytes > DbfData.Num()) break;
-
-		FBuildingAttribute Attr;
-		if (DbfData[RecOffset] == 0x2A)
-		{
-			Attr.Usage = TEXT("DELETED");
-			Attributes.Add(Attr);
-			continue;
-		}
-
-		if (UsageFieldOffset >= 0 && UsageFieldLen > 0)
-		{
-			TArray<uint8> UsageBuffer;
-			UsageBuffer.AddUninitialized(UsageFieldLen + 1);
-			FMemory::Memcpy(UsageBuffer.GetData(), &DbfData[RecOffset + UsageFieldOffset], UsageFieldLen);
-			UsageBuffer[UsageFieldLen] = 0;
-			
-			Attr.Usage = FString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(UsageBuffer.GetData()))).TrimStartAndEnd();
-		}
-
-		if (FloorFieldOffset >= 0 && FloorFieldLen > 0)
-		{
-			TArray<uint8> FloorBuffer;
-			FloorBuffer.AddUninitialized(FloorFieldLen + 1);
-			FMemory::Memcpy(FloorBuffer.GetData(), &DbfData[RecOffset + FloorFieldOffset], FloorFieldLen);
-			FloorBuffer[FloorFieldLen] = 0;
-			
-			FString FloorStr = FString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(FloorBuffer.GetData()))).TrimStartAndEnd();
-			Attr.FloorCount = FCString::Atoi(*FloorStr);
-			if (Attr.FloorCount <= 0) Attr.FloorCount = 1;
-		}
-
-		Attributes.Add(Attr);
-	}
-
-	if (ShpData.Num() < 100)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Invalid SHP file size (too small)."));
-		return;
-	}
-
-	int32 ShpShapeType = *reinterpret_cast<const int32*>(&ShpData[32]);
-	if (ShpShapeType != 5)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SHP ShapeType is not Polygon (5). Type: %d"), ShpShapeType);
-	}
-
+	// 아웃풋 액터 리셋
 	OutputBuildingDynamicMeshActor->SetActorTransform(FTransform::Identity);
-	UDynamicMeshComponent* DynMeshComp = OutputBuildingDynamicMeshActor->GetDynamicMeshComponent();
+	UDynamicMeshComponent* DynMeshComp = OutputBuildingDynamicMeshActor ? OutputBuildingDynamicMeshActor->GetDynamicMeshComponent() : nullptr;
 	if (!DynMeshComp) return;
 
 	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
@@ -4930,85 +4752,57 @@ void AHDMapMeshGenerator::GenerateBuildingMesh()
 		NativeMesh.Attributes()->EnableMaterialID();
 	}
 
-	FTransform VisTransform = VisualizerActor->GetActorTransform();
+	// 데이터 테이블 모든 행 획득
+	TArray<FHDMapBuildingRow*> BuildingRows;
+	DT_Building->GetAllRows<FHDMapBuildingRow>(TEXT("HDMapMeshGen_AllBuildings"), BuildingRows);
 
-	int32 ShpOffset = 100;
-	int32 RecordCounter = 0;
-
-	while (ShpOffset + 8 <= ShpData.Num())
+	FTransform VisTransform = FTransform::Identity;
+	if (VisualizerActor)
 	{
-		int32 RecNum = SwapEndian(*reinterpret_cast<const int32*>(&ShpData[ShpOffset]));
-		int32 ContentWords = SwapEndian(*reinterpret_cast<const int32*>(&ShpData[ShpOffset + 4]));
-		int32 ContentBytes = ContentWords * 2;
+		VisTransform = VisualizerActor->GetActorTransform();
+	}
 
-		int32 DataOffset = ShpOffset + 8;
-		ShpOffset = DataOffset + ContentBytes;
+	int32 SpawendCounter = 0;
+	for (FHDMapBuildingRow* Row : BuildingRows)
+	{
+		if (!Row || Row->ID.Equals(TEXT("ORIGIN")) || Row->Points.Num() < 3) continue;
 
-		if (ShpOffset > ShpData.Num()) break;
+		// 1) 층수 및 용도별 건물 높이 계산
+		float Height = BuildingBaseFloorHeight;
+		int32 Floors = Row->FloorCount > 0 ? Row->FloorCount : 1;
+		float SingleFloorHeight = 500.f; // 기본 5.0m
 
-		int32 RecShapeType = *reinterpret_cast<const int32*>(&ShpData[DataOffset]);
-		if (RecShapeType != 5) continue;
-
-		int32 NumParts = *reinterpret_cast<const int32*>(&ShpData[DataOffset + 36]);
-		int32 NumPoints = *reinterpret_cast<const int32*>(&ShpData[DataOffset + 40]);
-
-		if (NumPoints < 3)
+		FString UsageStr = Row->Usage;
+		if (UsageStr.Contains(TEXT("주택")) || UsageStr.Contains(TEXT("숙박")) || UsageStr.Contains(TEXT("house")) || UsageStr.Contains(TEXT("hotel")) || UsageStr.Contains(TEXT("residence")))
 		{
-			RecordCounter++;
-			continue;
+			SingleFloorHeight = 350.f; // 3.5m
 		}
-
-		int32 PartsOffset = DataOffset + 44;
-		int32 PointsOffset = PartsOffset + NumParts * 4;
-
-		if (PointsOffset + NumPoints * 16 > ShpData.Num()) break;
-
-		TArray<FVector> BoundaryWorldPoints;
-		BoundaryWorldPoints.Reserve(NumPoints);
-
-		const double* PointsRaw = reinterpret_cast<const double*>(&ShpData[PointsOffset]);
-		for (int32 p = 0; p < NumPoints; ++p)
+		else if (UsageStr.Contains(TEXT("근린생활")) || UsageStr.Contains(TEXT("상가")) || UsageStr.Contains(TEXT("shop")) || UsageStr.Contains(TEXT("commercial")))
 		{
-			double RawX = PointsRaw[p * 2];
-			double RawY = PointsRaw[p * 2 + 1];
+			SingleFloorHeight = 400.f; // 4.0m
+		}
+		
+		Height = Floors * SingleFloorHeight;
 
-			FVector LocalPt(RawX, RawY, 0.f);
-			FVector WP = VisTransform.TransformPosition(LocalPt);
+		// 2) 2D 풋프린트 정점 월드 트랜스폼 및 지형 높이 스냅 Z 획득
+		int32 BoundaryCount = Row->Points.Num();
+		TArray<FVector> BoundaryWorldPoints;
+		BoundaryWorldPoints.Reserve(BoundaryCount);
+
+		for (const FVector& Pt : Row->Points)
+		{
+			FVector WP = VisTransform.TransformPosition(Pt);
 			BoundaryWorldPoints.Add(WP);
 		}
 
+		// 마지막 정점 중복 제거
 		if (BoundaryWorldPoints.Num() > 1 && FVector::DistSquared2D(BoundaryWorldPoints[0], BoundaryWorldPoints.Last()) < WeldDistance * WeldDistance)
 		{
 			BoundaryWorldPoints.RemoveAt(BoundaryWorldPoints.Num() - 1);
+			BoundaryCount = BoundaryWorldPoints.Num();
 		}
 
-		int32 BoundaryCount = BoundaryWorldPoints.Num();
-		if (BoundaryCount < 3)
-		{
-			RecordCounter++;
-			continue;
-		}
-
-		float Height = BuildingBaseFloorHeight;
-		if (Attributes.IsValidIndex(RecordCounter))
-		{
-			const FBuildingAttribute& Attr = Attributes[RecordCounter];
-			if (!Attr.Usage.Equals(TEXT("DELETED")))
-			{
-				if (Attr.Usage.Contains(TEXT("주택")) || Attr.Usage.Contains(TEXT("숙박")) || Attr.Usage.Contains(TEXT("house")) || Attr.Usage.Contains(TEXT("hotel")) || Attr.Usage.Contains(TEXT("residence")))
-				{
-					Height = Attr.FloorCount * 350.f;
-				}
-				else if (Attr.Usage.Contains(TEXT("근린생활")) || Attr.Usage.Contains(TEXT("상가")) || Attr.Usage.Contains(TEXT("shop")) || Attr.Usage.Contains(TEXT("commercial")))
-				{
-					Height = Attr.FloorCount * 400.f;
-				}
-				else
-				{
-					Height = Attr.FloorCount * 500.f;
-				}
-			}
-		}
+		if (BoundaryCount < 3) continue;
 
 		float CommonBaseZ = 0.f;
 		if (bSnapToLandscape)
@@ -5020,43 +4814,54 @@ void AHDMapMeshGenerator::GenerateBuildingMesh()
 			CommonBaseZ = BoundaryWorldPoints[0].Z;
 		}
 
-		TArray<int32> BottomVertIDs;
-		TArray<int32> TopVertIDs;
-		BottomVertIDs.Reserve(BoundaryCount);
-		TopVertIDs.Reserve(BoundaryCount);
+		// ⚠️ 지하 2층 적용 장치: 
+		// 경사지 지형에 건물이 붕 뜨는 이격을 완벽하게 방지하기 위해 
+		// 건물의 밑바닥 고도(BaseZ)를 해당 건물의 2개 층 높이만큼 땅 속으로 파묻고, 
+		// 압출 높이(Height)에도 2개 층높이를 가산해 줍니다. (지상층 뷰포트 높이는 그대로 유지)
+		CommonBaseZ -= (SingleFloorHeight * 2.f);
+		Height += (SingleFloorHeight * 2.f);
 
-		TArray<FVector> LocalFlatPoints;
-		LocalFlatPoints.Reserve(BoundaryCount);
-
-		for (int32 v = 0; v < BoundaryCount; ++v)
+		// 처음 10개 건물 스펙 체크 디버그 출력
+		if (SpawendCounter < 10)
 		{
-			FVector BP = BoundaryWorldPoints[v];
-			BP.Z = CommonBaseZ;
-
-			FVector TP = BP;
-			TP.Z += Height;
-
-			BottomVertIDs.Add(NativeMesh.AppendVertex(BP));
-			TopVertIDs.Add(NativeMesh.AppendVertex(TP));
-
-			LocalFlatPoints.Add(FVector(BP.X, BP.Y, 0.f));
+			UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] DT Spec Check - Building %d (%s): Usage='%s', Floors=%d, Final Height=%.1fm (%.1fcm, Inc. B2F)"),
+				SpawendCounter, *Row->ID, *Row->Usage, Row->FloorCount, (Height - (SingleFloorHeight * 2.f)) / 100.f, Height);
 		}
 
+		// 3) 다이나믹 메쉬 추가 및 3D 압출(Extrude - Flat Shading Hard Edges 보장)
+		
+		// 3-1) 옆면 (Side Walls) 생성 - 와인딩 순서를 뒤집어 노멀(법선)이 건물 바깥쪽(외부)을 지향하도록 교정
 		for (int32 i = 0; i < BoundaryCount; ++i)
 		{
 			int32 next_i = (i + 1) % BoundaryCount;
-			int32 B0 = BottomVertIDs[i];
-			int32 B1 = BottomVertIDs[next_i];
-			int32 T0 = TopVertIDs[i];
-			int32 T1 = TopVertIDs[next_i];
+			FVector BP0 = BoundaryWorldPoints[i];      BP0.Z = CommonBaseZ;
+			FVector BP1 = BoundaryWorldPoints[next_i];  BP1.Z = CommonBaseZ;
+			FVector TP0 = BP0; TP0.Z += Height;
+			FVector TP1 = BP1; TP1.Z += Height;
 
-			NativeMesh.AppendTriangle(B0, B1, T1);
-			NativeMesh.AppendTriangle(B0, T1, T0);
+			int32 V_B0 = NativeMesh.AppendVertex(BP0);
+			int32 V_B1 = NativeMesh.AppendVertex(BP1);
+			int32 V_T0 = NativeMesh.AppendVertex(TP0);
+			int32 V_T1 = NativeMesh.AppendVertex(TP1);
+
+			// 바깥쪽(외부) 콜리전이 막히도록 노멀 와인딩 순서 교정 (CCW/CW 뒤집기)
+			NativeMesh.AppendTriangle(V_B0, V_T1, V_B1);
+			NativeMesh.AppendTriangle(V_B0, V_T0, V_T1);
 		}
 
+		// 3-2) 밑면 및 윗면 델로네 삼각화 마감 (정점 공유 격리)
 		TArray<FIntVector> RoofTriangles;
+		TArray<FVector> LocalFlatPoints;
+		LocalFlatPoints.Reserve(BoundaryCount);
+		for (int32 v = 0; v < BoundaryCount; ++v)
+		{
+			FVector BP = BoundaryWorldPoints[v];
+			LocalFlatPoints.Add(FVector(BP.X, BP.Y, 0.f));
+		}
+
 		if (RunDelaunayTriangulation(LocalFlatPoints, RoofTriangles))
 		{
+			TArray<FIntVector> ValidTris;
 			for (const FIntVector& Tri : RoofTriangles)
 			{
 				FVector V0 = LocalFlatPoints[Tri.X];
@@ -5079,21 +4884,50 @@ void AHDMapMeshGenerator::GenerateBuildingMesh()
 						FinalY = Tri.Z;
 						FinalZ = Tri.Y;
 					}
+					ValidTris.Add(FIntVector(Tri.X, FinalY, FinalZ));
+				}
+			}
 
-					NativeMesh.AppendTriangle(TopVertIDs[Tri.X], TopVertIDs[FinalY], TopVertIDs[FinalZ]);
-					NativeMesh.AppendTriangle(BottomVertIDs[Tri.X], BottomVertIDs[FinalZ], BottomVertIDs[FinalY]);
+			if (ValidTris.Num() > 0)
+			{
+				// 윗면 전용 정점 추가
+				TArray<int32> TopVertIDs;
+				TopVertIDs.Reserve(BoundaryCount);
+				for (int32 v = 0; v < BoundaryCount; ++v)
+				{
+					FVector TP = BoundaryWorldPoints[v];
+					TP.Z = CommonBaseZ + Height;
+					TopVertIDs.Add(NativeMesh.AppendVertex(TP));
+				}
+				for (const FIntVector& Tri : ValidTris)
+				{
+					NativeMesh.AppendTriangle(TopVertIDs[Tri.X], TopVertIDs[Tri.Y], TopVertIDs[Tri.Z]);
+				}
+
+				// 밑면 전용 정점 추가
+				TArray<int32> BottomVertIDs;
+				BottomVertIDs.Reserve(BoundaryCount);
+				for (int32 v = 0; v < BoundaryCount; ++v)
+				{
+					FVector BP = BoundaryWorldPoints[v];
+					BP.Z = CommonBaseZ;
+					BottomVertIDs.Add(NativeMesh.AppendVertex(BP));
+				}
+				for (const FIntVector& Tri : ValidTris)
+				{
+					NativeMesh.AppendTriangle(BottomVertIDs[Tri.X], BottomVertIDs[Tri.Z], BottomVertIDs[Tri.Y]);
 				}
 			}
 		}
 
-		RecordCounter++;
+		SpawendCounter++;
 	}
 
 	DynMesh->SetMesh(NativeMesh);
 	DynMeshComp->NotifyMeshUpdated();
 	DynMeshComp->SetComplexAsSimpleCollisionEnabled(true, true);
 
-	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Building Mesh Generation Completed. Total Buildings Spawned: %d"), RecordCounter);
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Building Mesh Generation Completed. Total Buildings Spawned: %d"), SpawendCounter);
 }
 
 void AHDMapMeshGenerator::SaveBuildingToStaticMeshAsset()

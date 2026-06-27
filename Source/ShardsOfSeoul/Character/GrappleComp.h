@@ -44,10 +44,10 @@ private:
 	class APlayerCameraManager* CameraManager;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Grapple", meta = (AllowPrivateAccess = "true"))
-	float MaxGrappleDistance = 2000.f;
+	float MaxGrappleDistance = 2500.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Grapple", meta = (AllowPrivateAccess = "true"))
-	float LaunchSpeed = 1500.f;
+	float LaunchSpeed = 4000.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Grapple", meta = (AllowPrivateAccess = "true"))
 	FName GrappleableTag = FName("Grappleable");
@@ -59,7 +59,7 @@ private:
 	class UAnimMontage* GrappleMontage;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Movement|Grapple", meta = (AllowPrivateAccess = "true"))
-	float GrappleDelay = 0.3f;
+	float GrappleDelay = 0.2f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Movement|Grapple", meta = (AllowPrivateAccess = "true"))
 	class AActor* CurrentTargetActor = nullptr;

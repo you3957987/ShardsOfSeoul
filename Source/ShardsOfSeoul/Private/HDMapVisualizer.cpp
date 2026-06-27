@@ -126,6 +126,7 @@ void AHDMapVisualizer::ImportHDMapData()
 	TableToJSONMap.Add(DT_C4_SpeedBump, TEXT("HDMap_C4.json"));
 	TableToJSONMap.Add(DT_C5_Barrier, TEXT("HDMap_C5.json"));
 	TableToJSONMap.Add(DT_C6_Post, TEXT("HDMap_C6.json"));
+	TableToJSONMap.Add(DT_Building, TEXT("HDMapBuilding.json"));
 	TableToJSONMap.Add(HDMapDataTable, TEXT("HDMapData.json"));
 
 	int32 ReimportedCount = 0;

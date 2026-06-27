@@ -291,13 +291,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	FString SaveBuildingAssetPath;
 
-	// 건물 외곽선 데이터 (.shp) 파일 절대 경로
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")
-	FString BuildingShpFilePath;
-
-	// 건물 속성 데이터 (.dbf) 파일 절대 경로
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")
-	FString BuildingDbfFilePath;
+	// 건물 정보 데이터 테이블 에셋 (파이썬으로 변환된 HDMapBuilding.json 로드용)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Target")
+	UDataTable* DT_Building;
 
 	// 기본 건물 1층 높이 (cm 단위, 기본값 350.f = 3.5m)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")

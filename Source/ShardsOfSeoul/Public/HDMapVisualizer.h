@@ -65,6 +65,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Data")
 	UDataTable* DT_C6_Post;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Data")
+	UDataTable* DT_Building;
+
 
 	// 도로 링크(A2_LINK) 시각화에 사용할 스태틱 메쉬 (기본값: 피라미드/화살표머리 권장)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Style")
