@@ -63,6 +63,8 @@ public:
 	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, 
 		class AController* EventInstigator, AActor* DamageCauser) override;
 	virtual void Die();
+	virtual void AfterDieMontageEnd() override;
+	virtual void EndBattleLog() override;
 	
 	// 공격 가중치 구조체
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
@@ -196,9 +198,14 @@ public:
 	TObjectPtr<class ATargetPoint> HechiTeleportPoint;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	TObjectPtr<class ATargetPoint> CharacterTeleportPoint;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
+	TObjectPtr<class ATargetPoint> CharacterReturnPoint;
 	// 블루프린트 이벤트 그래프에 쓸 커스텀 이벤트
 	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
 	void ChangeMap();
+	// 블루프린트 이벤트 그래프에 쓸 커스텀 이벤트
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
+	void ReturnToMap();
 	UFUNCTION(BlueprintCallable)
 	void DisablePlayerInput();
 	UFUNCTION(BlueprintCallable)
@@ -209,16 +216,23 @@ public:
 	void PlayCharacterTeleportReadyEffect();
 	
 	UPROPERTY()
-	class APostProcessVolume* LevelPostProcessVolume;
+	class APostProcessVolume* RandomChangeLevelPostProcessVolume;
+	UPROPERTY()
+	class APostProcessVolume* FirstChangeLevelPostProcessVolume;
 	// 에디터에서 포스트 프로세스 머터리얼(또는 인스턴스)들을 등록할 배열
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
-	TArray<class UMaterialInterface*> PostProcessMaterialArray;
+	TArray<class UMaterialInterface*> RamdomPostProcessMaterialArray;
+	// 처음에 초기화 할 머터리얼 인스턴스 배열
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	TArray<class UMaterialInterface*> FirstPostProcessMaterialArray;
 	void ChangePostProcessMaterialByIndex(int32 Index);
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
 	UAnimMontage* ChangePostProcessMontage;
 	UAnimMontage* PlayChangePostProcessMontage();
 	UFUNCTION(BlueprintCallable)
 	void RandomChangePostProcess();
+	UFUNCTION(BlueprintCallable)
+	void FirstChangePostProcess();
 	int32 CurrentPostProcessIndex = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "자체설정")
 	TSubclassOf<UCameraShakeBase> CameraShakeClass;

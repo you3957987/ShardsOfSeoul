@@ -272,4 +272,15 @@ struct FHechiLogData
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FCommonBossLogData Base; // 공통 데이터 포함
 	
+	// CSV 행 변환 구현 (공통 데이터 Row 문자열을 그대로 반환)
+	FString ToCSVRow() const
+	{
+		return Base.ToCSVRow();
+	}
+
+	// CSV 헤더 컬럼명 정의 (공통 데이터 Header 문자열을 그대로 반환)
+	static FString GetCSVHeader()
+	{
+		return FCommonBossLogData::GetCSVHeader();
+	}
 };

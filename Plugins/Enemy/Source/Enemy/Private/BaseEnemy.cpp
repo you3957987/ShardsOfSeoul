@@ -241,7 +241,7 @@ void ABaseEnemy::Die()
 	// 충돌 비활성화
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GetCharacterMovement()->DisableMovement();
-
+	
 	// AI 로직 중지
 	if (BlackboardComp)
 	{

@@ -458,12 +458,12 @@ void ABaseBossEnemy::TestDeadLogic()
 	if (bCheckDeadLogic)
 	{
 		FTimerHandle DeadTestTimerHandle;
-		// 5초 후에 체력을 0으로 만들고 Die() 함수를 호출합니다.
+		// 7초 후에 체력을 0으로 만들고 Die() 함수를 호출합니다.
 		GetWorld()->GetTimerManager().SetTimer(DeadTestTimerHandle, [this]()
 		{
 		 Health = 0.f;
 		 Die();
-		}, 5.0f, false);
+		}, 7.0f, false);
 	}
 }
 

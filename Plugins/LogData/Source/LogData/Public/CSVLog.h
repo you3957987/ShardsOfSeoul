@@ -48,6 +48,16 @@ public:
 		const FBossMagicSwordManLogData& LogData
 		
 	);
+	
+	// 해치 보스 로그
+	// 매직소드맨 보스 로그
+	UFUNCTION(BlueprintCallable, Category = "LogData_CSVLogger", Meta = (AutoCreateRefTerm = "LogData"))
+	static void AddHechiLog(
+		const FString& LogCategory, 
+		const FHechiLogData& LogData
+		
+	);
+	
 
 
 };

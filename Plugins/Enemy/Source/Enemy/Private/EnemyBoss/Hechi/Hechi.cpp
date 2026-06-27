@@ -1,5 +1,6 @@
 #include "EnemyBoss/Hechi/Hechi.h"
 
+#include "CSVLog.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -11,6 +12,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "EngineUtils.h"
+#include "Components/ProgressBar.h"
+#include "EnemyHUD/BossHealthBarWidget.h"
 
 AHechi::AHechi()
 {
@@ -75,52 +78,110 @@ float AHechi::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEv
 void AHechi::Die()
 {
 	FTimerManager& TimerManager = GetWorldTimerManager();
-
-	// 1. 디버그 및 기본 반복 타이머 청소
-	TimerManager.ClearTimer(RepeatingTimerHandle);
-	// 2. 레이저 패턴 타이머 청소
+	
+	//  레이저 패턴 타이머 청소
 	TimerManager.ClearTimer(LaserTimerHandle);
-	// 3. 레이저 발사체(연사) 패턴 타이머 청소
+	//  레이저 발사체(연사) 패턴 타이머 청소
 	TimerManager.ClearTimer(ProjectileTimerHandle);
-	// 4. 보스 자체 텔레포트 타이머 청소
+	//  보스 자체 텔레포트 타이머 청소
 	TimerManager.ClearTimer(TeleportTimerHandle);
-	// 5. 2페이즈 맵 변경 시 캐릭터 강제 텔레포트 타이머 청소
+	//  2페이즈 맵 변경 시 캐릭터 강제 텔레포트 타이머 청소
 	TimerManager.ClearTimer(CharacterTeleportTimerHandle);
-	// 6. 5초마다 무한 반복되던 포스트 프로세스 변경 루프 타이머 청소
+	//  5초마다 무한 반복되던 포스트 프로세스 변경 루프 타이머 청소
 	TimerManager.ClearTimer(PostProcessLoopHandle);
+	
+	RandomChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+	
+	FirstChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
 	
 	Super::Die();
 }
 
+void AHechi::AfterDieMontageEnd()
+{
+	if ( GetMesh() )
+	{
+		GetMesh()->bPauseAnims = true;
+	}
+	
+	if (TargetCharacter && TargetCharacter->Implements<UItemDropInterface>())
+	{
+		IItemDropInterface::Execute_HandleEnemyDeadAndDropItem(TargetCharacter, this);
+	}
+	
+	// 7초 뒤에 Destroy() 하기		
+	FTimerHandle DestroyTimerHandle;
+	GetWorldTimerManager().SetTimer(DestroyTimerHandle, [this]()
+	{
+		Destroy();
+	}, 7.0f, false);
+}
+
 void AHechi::MyThreeSecondRepeatingFunction()
 {	
-	// 대미지를 적용하는 함수
-	UGameplayStatics::ApplyDamage(
-		this,             // 대미지를 받을 액터 (자기 자신)
-		10.f,     // 대미지 양
-		GetController(),  // 대미지를 가한 컨트롤러 (자해이므로 본인의 컨트롤러)
-		this,             // 대미지를 유발한 액터 (자기 자신)
-		UDamageType::StaticClass() // 대미지 타입 클래스 (기본 타입)
-	);
+	if (Health <= 0.f) return;
+
+	// 체력을 깎은 후, 0.f와 비교하여 더 큰 값을 대입 (0 미만으로 내려가지 않음)
+	Health = FMath::Max(Health - 10.f, 0.f);
+    
+	if (Health <= 0.f)
+	{
+		//  디버그 및 기본 반복 타이머 청소
+		GetWorldTimerManager().ClearTimer(RepeatingTimerHandle);
+		
+		// 체력 바를 0%로 확실하게 세팅하고 사망 처리
+		if (BossHealthBar && BossHealthBar->HealthProgressBar)
+		{
+			BossHealthBar->HealthProgressBar->SetPercent(0.f);
+		}
+		Health = 0.f;
+		Die();
+		return;
+	}
+    
+	if (BossHealthBar && BossHealthBar->HealthProgressBar)
+	{
+		BossHealthBar->HealthProgressBar->SetPercent(Health / MaxHealth);
+	}
+	SetHitOverlay(); // 히트 오버레이 설정
 	
+	if (Health > 0.f && bIsChangeMap == false)
+	{
+		// 현재 체력 비율 계산 (MaxHealth가 0이 아님을 전제)
+		float CurrentHealthRatio = Health / MaxHealth;
+
+		if (CurrentHealthRatio <= ChangeMapHealthThreshold)
+		{
+			bIsChangeMap = true; // 중복 실행 방지
+			
+			// 블랙보드 값 업데이트 (StartSecondPhase 함수 호출)
+			StartChangeMapPattern(); 
+		}
+	}
 }
 
 void AHechi::InitializePostProcessVolume()
 {
-	// 찾고자 하는 태그 이름을 여기에 하드코딩합니다.
-	const FName HardCodedTag = TEXT("Hechi");
-
 	for (TActorIterator<APostProcessVolume> It(GetWorld()); It; ++It)
 	{
 		APostProcessVolume* Volume = *It;
-		if (Volume && Volume->ActorHasTag(HardCodedTag))
+		if (!Volume) continue;
+
+		if (Volume->ActorHasTag(TEXT("Hechi")))
 		{
-			LevelPostProcessVolume = Volume;
-			UE_LOG(LogTemp, Log, TEXT("Hechi: Successfully cached PostProcessVolume with tag: %s"), *HardCodedTag.ToString());
-			return;
+			RandomChangeLevelPostProcessVolume = Volume;
+		}
+		else if (Volume->ActorHasTag(TEXT("Hechi_First")))
+		{
+			FirstChangeLevelPostProcessVolume = Volume;
+		}
+
+		// 최적화: 만약 두 개를 모두 찾았다면 더 이상 돌 필요가 없으므로 루프 탈출
+		if (RandomChangeLevelPostProcessVolume && FirstChangeLevelPostProcessVolume)
+		{
+			break; 
 		}
 	}
-	UE_LOG(LogTemp, Warning, TEXT("Hechi: Failed to find PostProcessVolume with tag: %s"), *HardCodedTag.ToString());
 }
 
 UAnimMontage* AHechi::StartLaserAttack()
@@ -350,12 +411,6 @@ void AHechi::EndGravityAttack()
 						AttackStruct.GravityAttackDamage, GetController(), this, UDamageType::StaticClass());
 					
 					CommonBossLogData.TotalDamageDealt += AttackStruct.GravityAttackDamage;
-					//BossSkeletonMageLogData.GravityAttackDamage += AttackStruct.GravityAttackDamage;
-					
-					UEnemyLogManager::EnemyLog(EEnemyLogType::SkeletonMage, 
-						FString::Printf(TEXT("[스켈레톤 메이지] 중력 공격으로 플레이어에게 %.2f 대미지"), AttackStruct.GravityAttackDamage));
-					
-					//BossSkeletonMageLogData.GravityAttackDamage += AttackStruct.GravityAttackDamage;
 				}
 			}
 		}
@@ -730,42 +785,42 @@ void AHechi::PlayCharacterTeleportReadyEffect()
 void AHechi::ChangePostProcessMaterialByIndex(int32 Index)
 {
 	// 1. 포스트 프로세스 볼륨이 정상적으로 캐싱되어 있는지 확인
-	if (LevelPostProcessVolume == nullptr)
+	if (RandomChangeLevelPostProcessVolume == nullptr)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Hechi: CachedPPVolume is null. Cannot change material."));
 		return;
 	}
 
 	// 2. 입력된 인덱스가 배열 범위 내에 있는지 안전성 검사 (Nptr/Crash 방지)
-	if (!PostProcessMaterialArray.IsValidIndex(Index))
+	if (!RamdomPostProcessMaterialArray.IsValidIndex(Index))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Hechi: Invalid material index or null material at index: %d"), Index);
 		return;
 	}
 	
-	if ( PostProcessMaterialArray[Index] == nullptr )
+	if ( RamdomPostProcessMaterialArray[Index] == nullptr )
 	{
-		LevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+		RandomChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
 		return;
 	}
 
 	// 3. 가중치(Weight)를 가진 가중 블렌더블 구조체 생성
 	FWeightedBlendable NewBlendable;
 	NewBlendable.Weight = 1.0f;              // 효과 적용 강도 (0.0 ~ 1.0)
-	NewBlendable.Object = PostProcessMaterialArray[Index]; // 선택한 머터리얼 인터페이스 설정
+	NewBlendable.Object = RamdomPostProcessMaterialArray[Index]; // 선택한 머터리얼 인터페이스 설정
 
 	// 4. 기존 볼륨에 걸려있던 포스트 프로세스 머터리얼 배열을 완전히 비우기
-	LevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+	RandomChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
 
 	// 5. 새로운 머터리얼 추가 적용
-	LevelPostProcessVolume->Settings.WeightedBlendables.Array.Add(NewBlendable);
+	RandomChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Add(NewBlendable);
 
 	// 6. (옵션) 혹시 볼륨이나 가중치가 꺼져있다면 확실하게 켜주기
-	LevelPostProcessVolume->bEnabled = true;
-	LevelPostProcessVolume->BlendWeight = 1.0f;
+	RandomChangeLevelPostProcessVolume->bEnabled = true;
+	RandomChangeLevelPostProcessVolume->BlendWeight = 1.0f;
 
 	UE_LOG(LogTemp, Log, TEXT("Hechi: Successfully changed PostProcess Material to Index [%d]: %s"), 
-		Index, *PostProcessMaterialArray[Index]->GetName());
+		Index, *RamdomPostProcessMaterialArray[Index]->GetName());
 }
 
 UAnimMontage* AHechi::PlayChangePostProcessMontage()
@@ -787,14 +842,14 @@ UAnimMontage* AHechi::PlayChangePostProcessMontage()
 void AHechi::RandomChangePostProcess()
 {
 	// 머터리얼 배열이 비어있는지 확인
-	if (PostProcessMaterialArray.Num() == 0)
+	if (RamdomPostProcessMaterialArray.Num() == 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Hechi: PostProcessMaterialArray is empty!"));
 		return;
 	}
 
 	// 머터리얼이 1개만 있는 경우 -> 중복 체크 없이 바로 적용
-	if (PostProcessMaterialArray.Num() == 1)
+	if (RamdomPostProcessMaterialArray.Num() == 1)
 	{
 		CurrentPostProcessIndex = 0;
 	}
@@ -804,7 +859,7 @@ void AHechi::RandomChangePostProcess()
 		int32 NewIndex = CurrentPostProcessIndex;
 		while (NewIndex == CurrentPostProcessIndex)
 		{
-			NewIndex = FMath::RandRange(0, PostProcessMaterialArray.Num() - 1);
+			NewIndex = FMath::RandRange(0, RamdomPostProcessMaterialArray.Num() - 1);
 		}
 		CurrentPostProcessIndex = NewIndex;
 	}
@@ -825,6 +880,57 @@ void AHechi::RandomChangePostProcess()
 		false  // 반복 없이 단 한 번만 실행
 	);
 	
+}
+
+void AHechi::FirstChangePostProcess()
+{
+	UE_LOG(LogTemp, Error, TEXT("Hechi: First ChangePostProcess"));
+	// 1. 포스트 프로세스 볼륨이 정상적으로 캐싱되어 있는지 확인
+	if (FirstChangeLevelPostProcessVolume == nullptr)
+	{
+		return;
+	}
+
+	// 2. 머터리얼 배열이 비어있으면 볼륨을 초기화하고 종료
+	if (FirstPostProcessMaterialArray.Num() == 0)
+	{
+		FirstChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+		return;
+	}
+
+	// 시각적 연출을 위해 타이머 시작 전 카메라를 먼저 흔들어줍니다.
+	ShakeCamera();
+
+	// 0.1초 지연 처리를 위한 일회성 타이머 설정
+	FTimerHandle FirstPPDelayHandle;
+	GetWorldTimerManager().SetTimer(
+		FirstPPDelayHandle,
+		[this]()
+		{
+			// 3. 기존 볼륨에 걸려있던 블렌더블 배열을 완전히 비우기
+			FirstChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Empty();
+
+			// 4. 배열에 있는 모든 유효한 머터리얼을 순회하며 가중치 1.0f로 추가
+			for (UMaterialInterface* Material : FirstPostProcessMaterialArray)
+			{
+				if (Material != nullptr)
+				{
+					FWeightedBlendable NewBlendable;
+					NewBlendable.Weight = 1.0f; // 효과 강도 최대
+					NewBlendable.Object = Material;
+
+					FirstChangeLevelPostProcessVolume->Settings.WeightedBlendables.Array.Add(NewBlendable);
+				}
+			}
+
+			// 5. 볼륨 활성화 및 가중치 확인
+			FirstChangeLevelPostProcessVolume->bEnabled = true;
+			FirstChangeLevelPostProcessVolume->BlendWeight = 1.0f;
+			
+		},
+		0.1f,  // 0.1초 지연
+		false  // 반복 없음
+	);
 }
 
 void AHechi::ShakeCamera()
@@ -852,6 +958,18 @@ void AHechi::StartLoopPostProcessChange()
 		3.0f, // 5초 간격
 		true  // true = 무한 반복 실행
 	);
+}
+
+void AHechi::EndBattleLog()
+{
+	Super::EndBattleLog();
+	
+	HechiLogData.Base = CommonBossLogData;
+	
+	UCSVLog::AddHechiLog( TEXT("Test"), HechiLogData);
+	
+	CommonBossLogData = FCommonBossLogData(); // 공통 로그 데이터 초기화
+	HechiLogData = FHechiLogData(); // 보스별 로그 데이터 초기화
 }
 
 #if WITH_EDITOR

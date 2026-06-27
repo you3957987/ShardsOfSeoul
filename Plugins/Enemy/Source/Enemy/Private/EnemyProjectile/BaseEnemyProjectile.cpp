@@ -4,6 +4,7 @@
 #include "NiagaraComponent.h"
 #include "Components/SphereComponent.h"
 #include "Enemy/BaseRangedEnemy.h"
+#include "EnemyBoss/Hechi/Hechi.h"
 #include "EnemyBoss/MagicSwordMan/BossMagicSwordMan.h"
 #include "EnemyBoss/SkeletonMage/BossSkeletonMage.h"
 #include "GameFramework/Character.h"
@@ -143,6 +144,15 @@ void ABaseEnemyProjectile::OnOverlapBegin(UPrimitiveComponent* OverlappedCompone
 						BossOwner->CommonBossLogData.TotalDamageDealt += Damage; // 공통 로그 데이터에도 누적
 					}
 					
+				}
+				else if ( OwnerMeshName.Contains(TEXT("Hechi")) )
+				{
+					AHechi* BossOwner = Cast<AHechi>(GetOwner());
+					
+					if ( BossOwner )
+					{
+						BossOwner->CommonBossLogData.TotalDamageDealt += Damage; // 공통 로그 데이터에도 누적
+					}
 				}
 				else
 				{
