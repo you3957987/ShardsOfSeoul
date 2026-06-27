@@ -33,63 +33,30 @@ void UGrappleComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCom
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	// 1. 비행 중이 아닐 때는 실시간으로 최적의 자동 조준 대상을 찾아 캐싱
-	if (!bIsGrappling)
+	// 그래플 비행(런치 상태) 중일 때 처리
+	if (bIsGrappling && Owner)
 	{
-		CurrentTargetActor = FindBestGrappleTarget();
+		GrappleActiveTime += DeltaTime;
 
-		// 지상에서 시전하여 몽타주 재생 대기 중(준비 상태)일 때만 캐릭터가 아래로 떨어지거나 움직이지 않도록 속도를 Zero로 고정
-		if (bShouldHoldInAir && GetWorld() && GetWorld()->GetTimerManager().IsTimerActive(GrappleDelayTimerHandle) && Owner && Owner->GetCharacterMovement())
+		// 1. 타겟 지점 도달 여부 체크 (200cm 이내)
+		float Distance = FVector::Dist(Owner->GetActorLocation(), GrappleTargetLocation);
+
+		// 2. 착지 여부 체크
+		bool bLanded = false;
+		if (Owner->GetCharacterMovement())
 		{
-			Owner->GetCharacterMovement()->Velocity = FVector::ZeroVector;
-		}
-	}
-	// 2. 비행 중일 때는 타겟 방향으로 부드럽게 감속 비행
-	else if (bIsGrappling && Owner)
-	{
-		FVector CurrentLocation = Owner->GetActorLocation();
-		
-		// 타겟 몬스터가 움직이더라도 실시간 위치로 타겟팅 갱신
-		FVector TargetLocation = GrappleTargetLocation;
-		if (CurrentTargetActor)
-		{
-			TargetLocation = CurrentTargetActor->GetActorLocation();
+			bLanded = Owner->GetCharacterMovement()->IsMovingOnGround();
 		}
 
-		float Distance = FVector::Dist(TargetLocation, CurrentLocation);
-		FVector Direction = (TargetLocation - CurrentLocation).GetSafeNormal();
-
-		// 목표 지점 근처(80cm)에 도달했는지 확인
-		if (Distance <= 80.f)
+		// 해제 조건 만족 시 그래플 비행 종료
+		if (Distance <= 200.f || bLanded || GrappleActiveTime >= 1.5f)
 		{
 			bIsGrappling = false;
-			bShouldHoldInAir = false;
-			CurrentTargetActor = nullptr;
-			if (Owner->GetCharacterMovement())
-			{
-				// 날아가던 방향의 기존 속도를 일부 보존하고, 위로 살짝 뜨는 포물선 궤적을 위해 상승력(Z축 +400.f)을 더해 줍니다.
-				FVector ParabolicVelocity = Direction * LaunchSpeed * 0.8f;
-				ParabolicVelocity.Z = 400.f;
-
-				Owner->GetCharacterMovement()->Velocity = ParabolicVelocity;
-				
-				// 걷기 대신 공중 낙하(Falling) 상태로 전환하여 자연스러운 포물선 비행 유도
-				Owner->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
-			}
-		}
-		else
-		{
-			if (Owner->GetCharacterMovement())
-			{
-				// 목표 지점과 가까워질수록 속도가 자연스럽게 감소하는 감속 보정 공식
-				// 500cm(5m) 이내로 들어오면 거리에 비례하여 속도를 최대 20%까지 줄여 스르륵 착지합니다.
-				float SpeedScale = FMath::Clamp(Distance / 500.f, 0.2f, 1.0f);
-				float InterpolatedSpeed = LaunchSpeed * SpeedScale;
-
-				Owner->GetCharacterMovement()->Velocity = Direction * InterpolatedSpeed;
-			}
 		}
 	}
+
+	// 최적의 자동 조준 대상을 찾아 캐싱
+	CurrentTargetActor = FindBestGrappleTarget();
 }
 
 void UGrappleComp::Grapple()
@@ -117,23 +84,7 @@ void UGrappleComp::Grapple()
 			}
 		}
 
-		// 캐릭터가 공중(낙하) 상태인지 확인
-		bool bIsFalling = false;
-		if (Owner->GetCharacterMovement())
-		{
-			bIsFalling = Owner->GetCharacterMovement()->IsFalling();
-		}
-
-		bShouldHoldInAir = !bIsFalling;
-
-		// 지상에서 시전한 경우에만 즉시 이전 이동 관성을 멈추고 공중에 고정시킴
-		if (Owner->GetCharacterMovement() && bShouldHoldInAir)
-		{
-			Owner->GetCharacterMovement()->StopMovementImmediately();
-			// 준비 기간 동안 공중에 멈춰 있도록 우선 Flying 상태로 만들고 속도를 0으로 유지
-			Owner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
-			Owner->GetCharacterMovement()->Velocity = FVector::ZeroVector;
-		}
+		bShouldHoldInAir = false;
 
 		// 2. 비행할 목표 위치 설정
 		GrappleTargetLocation = CurrentTargetActor->GetActorLocation();
@@ -154,12 +105,44 @@ void UGrappleComp::StartGrappleMove()
 	if (!Owner) return;
 
 	bIsGrappling = true;
+	GrappleActiveTime = 0.f;
 	bShouldHoldInAir = false;
+
+	FVector TargetLoc = GrappleTargetLocation;
+	if (CurrentTargetActor)
+	{
+		TargetLoc = CurrentTargetActor->GetActorLocation();
+	}
+
+	FVector CurrentLocation = Owner->GetActorLocation();
+	float Distance = FVector::Dist(CurrentLocation, TargetLoc);
+	if (Distance < 100.f)
+	{
+		Distance = 100.f;
+	}
+
+	FVector Direction = (TargetLoc - CurrentLocation).GetSafeNormal();
+
 	if (Owner->GetCharacterMovement())
 	{
-		// 중력과 물리 충돌 방해를 막기 위해 Flying으로 전환
-		Owner->GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+		// 발사 직전 기존 관성을 0으로 소거 (Freeze & Go 연출 및 정확도 확보)
+		Owner->GetCharacterMovement()->StopMovementImmediately();
+		Owner->GetCharacterMovement()->Velocity = FVector::ZeroVector;
+
+		// 낙하(Falling) 상태로 전환하여 물리 법칙을 적용받게 함
+		Owner->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+
+		// 최초 와이어 이동 거리가 멀수록 슬링샷 효과를 더 강력하게 적용 (10m 기준 0.6배 ~ 1.8배)
+		float DistanceFactor = FMath::Clamp(Distance / 1500.f, 0.6f, 1.8f);
+
+		// Z축 보정 없이 대상을 향한 방향으로 속도를 즉시 대입
+		FVector LaunchVelocity = Direction * LaunchSpeed * DistanceFactor;
+
+		Owner->GetCharacterMovement()->Velocity = LaunchVelocity;
 	}
+
+	// 런치 완료 후 대상 포인터 정리
+	CurrentTargetActor = nullptr;
 }
 
 bool UGrappleComp::IsGrapplingOrPreparing() const

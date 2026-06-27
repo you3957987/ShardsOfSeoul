@@ -74,4 +74,5 @@ private:
 
 	bool bShouldHoldInAir = false;
 	FVector GrappleTargetLocation;
+	float GrappleActiveTime = 0.f;
 };

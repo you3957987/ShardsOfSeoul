@@ -4721,3 +4721,470 @@ void AHDMapMeshGenerator::CopyTargetRoadToDynamicMesh()
 		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] CopyTargetRoadToDynamicMesh: Failed to copy static mesh."));
 	}
 }
+
+// EUC-KR 및 UTF-8 바이트를 직접 대조하여 한글 필드명 매칭 여부를 검사하는 헬퍼 함수
+static bool MatchFieldName(const char* FieldNameRaw, const FString& TargetName)
+{
+	FString FieldName = FString(ANSI_TO_TCHAR(FieldNameRaw)).TrimStartAndEnd();
+	if (FieldName.Equals(TargetName, ESearchCase::IgnoreCase)) return true;
+
+	if (TargetName.Equals(TEXT("용도")))
+	{
+		if (FieldName.Equals(TEXT("yongdo"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("use"), ESearchCase::IgnoreCase) ||
+			FieldName.Contains(TEXT("usage"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("KIND"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("KND"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		const uint8 CP949_Yongdo[] = { 0xC5, 0xD9, 0xB5, 0xC5, 0 };
+		const uint8 UTF8_Yongdo[] = { 0xEC, 0x9A, 0xA9, 0xEB, 0x8F, 0x84, 0 };
+
+		if (FCStringAnsi::Stricmp(FieldNameRaw, (const char*)CP949_Yongdo) == 0 ||
+			FCStringAnsi::Strnicmp(FieldNameRaw, (const char*)UTF8_Yongdo, 6) == 0)
+		{
+			return true;
+		}
+	}
+	else if (TargetName.Equals(TEXT("층수")))
+	{
+		if (FieldName.Equals(TEXT("floor"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("floors"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("level"), ESearchCase::IgnoreCase) ||
+			FieldName.Contains(TEXT("levels"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("FLR"), ESearchCase::IgnoreCase) ||
+			FieldName.Equals(TEXT("FLR_CO"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		const uint8 CP949_Cheungsu[] = { 0xC3, 0xFE, 0xC6, 0xE2, 0 };
+		const uint8 UTF8_Cheungsu[] = { 0xEC, 0xB8, 0xB5, 0xEC, 0x88, 0x98, 0 };
+
+		if (FCStringAnsi::Stricmp(FieldNameRaw, (const char*)CP949_Cheungsu) == 0 ||
+			FCStringAnsi::Strnicmp(FieldNameRaw, (const char*)UTF8_Cheungsu, 6) == 0)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static int32 SwapEndian(int32 Value)
+{
+	return ((Value >> 24) & 0x000000FF) |
+		   ((Value >> 8)  & 0x0000FF00) |
+		   ((Value << 8)  & 0x00FF0000) |
+		   ((Value << 24) & 0xFF000000);
+}
+
+void AHDMapMeshGenerator::GenerateBuildingMesh()
+{
+	if (!VisualizerActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] VisualizerActor is NULL!"));
+		return;
+	}
+
+	if (!OutputBuildingDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] OutputBuildingDynamicMeshActor is NULL!"));
+		return;
+	}
+
+	TArray<uint8> ShpData;
+	TArray<uint8> DbfData;
+	if (!FFileHelper::LoadFileToArray(ShpData, *BuildingShpFilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to load SHP file: %s"), *BuildingShpFilePath);
+		return;
+	}
+	if (!FFileHelper::LoadFileToArray(DbfData, *BuildingDbfFilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to load DBF file: %s"), *BuildingDbfFilePath);
+		return;
+	}
+
+	if (DbfData.Num() < 32)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Invalid DBF file size (too small)."));
+		return;
+	}
+
+	int32 NumRecords = *reinterpret_cast<const int32*>(&DbfData[4]);
+	int16 HeaderBytes = *reinterpret_cast<const int16*>(&DbfData[8]);
+	int16 RecordBytes = *reinterpret_cast<const int16*>(&DbfData[10]);
+
+	int32 NumFields = (HeaderBytes - 33) / 32;
+	if (DbfData.Num() < HeaderBytes)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] DBF HeaderBytes is larger than file size."));
+		return;
+	}
+
+	int32 UsageFieldOffset = -1;
+	int32 UsageFieldLen = 0;
+	int32 FloorFieldOffset = -1;
+	int32 FloorFieldLen = 0;
+
+	int32 CurrentFieldOffset = 1;
+
+	for (int32 FieldIdx = 0; FieldIdx < NumFields; ++FieldIdx)
+	{
+		int32 DescOffset = 32 + FieldIdx * 32;
+		if (DescOffset + 32 > DbfData.Num()) break;
+
+		const char* FieldNameRaw = reinterpret_cast<const char*>(&DbfData[DescOffset]);
+		uint8 FieldLength = DbfData[DescOffset + 16];
+
+		if (MatchFieldName(FieldNameRaw, TEXT("용도")))
+		{
+			UsageFieldOffset = CurrentFieldOffset;
+			UsageFieldLen = FieldLength;
+		}
+		else if (MatchFieldName(FieldNameRaw, TEXT("층수")))
+		{
+			FloorFieldOffset = CurrentFieldOffset;
+			FloorFieldLen = FieldLength;
+		}
+
+		CurrentFieldOffset += FieldLength;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] DBF Parsed. Records: %d, UsageOffset: %d (Len:%d), FloorOffset: %d (Len:%d)"),
+		NumRecords, UsageFieldOffset, UsageFieldLen, FloorFieldOffset, FloorFieldLen);
+
+	struct FBuildingAttribute
+	{
+		FString Usage;
+		int32 FloorCount = 1;
+	};
+	TArray<FBuildingAttribute> Attributes;
+	Attributes.Reserve(NumRecords);
+
+	for (int32 RecIdx = 0; RecIdx < NumRecords; ++RecIdx)
+	{
+		int32 RecOffset = HeaderBytes + RecIdx * RecordBytes;
+		if (RecOffset + RecordBytes > DbfData.Num()) break;
+
+		FBuildingAttribute Attr;
+		if (DbfData[RecOffset] == 0x2A)
+		{
+			Attr.Usage = TEXT("DELETED");
+			Attributes.Add(Attr);
+			continue;
+		}
+
+		if (UsageFieldOffset >= 0 && UsageFieldLen > 0)
+		{
+			TArray<uint8> UsageBuffer;
+			UsageBuffer.AddUninitialized(UsageFieldLen + 1);
+			FMemory::Memcpy(UsageBuffer.GetData(), &DbfData[RecOffset + UsageFieldOffset], UsageFieldLen);
+			UsageBuffer[UsageFieldLen] = 0;
+			
+			Attr.Usage = FString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(UsageBuffer.GetData()))).TrimStartAndEnd();
+		}
+
+		if (FloorFieldOffset >= 0 && FloorFieldLen > 0)
+		{
+			TArray<uint8> FloorBuffer;
+			FloorBuffer.AddUninitialized(FloorFieldLen + 1);
+			FMemory::Memcpy(FloorBuffer.GetData(), &DbfData[RecOffset + FloorFieldOffset], FloorFieldLen);
+			FloorBuffer[FloorFieldLen] = 0;
+			
+			FString FloorStr = FString(ANSI_TO_TCHAR(reinterpret_cast<const char*>(FloorBuffer.GetData()))).TrimStartAndEnd();
+			Attr.FloorCount = FCString::Atoi(*FloorStr);
+			if (Attr.FloorCount <= 0) Attr.FloorCount = 1;
+		}
+
+		Attributes.Add(Attr);
+	}
+
+	if (ShpData.Num() < 100)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Invalid SHP file size (too small)."));
+		return;
+	}
+
+	int32 ShpShapeType = *reinterpret_cast<const int32*>(&ShpData[32]);
+	if (ShpShapeType != 5)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SHP ShapeType is not Polygon (5). Type: %d"), ShpShapeType);
+	}
+
+	OutputBuildingDynamicMeshActor->SetActorTransform(FTransform::Identity);
+	UDynamicMeshComponent* DynMeshComp = OutputBuildingDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh) return;
+	DynMesh->Reset();
+
+	UE::Geometry::FDynamicMesh3 NativeMesh;
+	NativeMesh.EnableAttributes();
+	if (!NativeMesh.Attributes()->GetMaterialID())
+	{
+		NativeMesh.Attributes()->EnableMaterialID();
+	}
+
+	FTransform VisTransform = VisualizerActor->GetActorTransform();
+
+	int32 ShpOffset = 100;
+	int32 RecordCounter = 0;
+
+	while (ShpOffset + 8 <= ShpData.Num())
+	{
+		int32 RecNum = SwapEndian(*reinterpret_cast<const int32*>(&ShpData[ShpOffset]));
+		int32 ContentWords = SwapEndian(*reinterpret_cast<const int32*>(&ShpData[ShpOffset + 4]));
+		int32 ContentBytes = ContentWords * 2;
+
+		int32 DataOffset = ShpOffset + 8;
+		ShpOffset = DataOffset + ContentBytes;
+
+		if (ShpOffset > ShpData.Num()) break;
+
+		int32 RecShapeType = *reinterpret_cast<const int32*>(&ShpData[DataOffset]);
+		if (RecShapeType != 5) continue;
+
+		int32 NumParts = *reinterpret_cast<const int32*>(&ShpData[DataOffset + 36]);
+		int32 NumPoints = *reinterpret_cast<const int32*>(&ShpData[DataOffset + 40]);
+
+		if (NumPoints < 3)
+		{
+			RecordCounter++;
+			continue;
+		}
+
+		int32 PartsOffset = DataOffset + 44;
+		int32 PointsOffset = PartsOffset + NumParts * 4;
+
+		if (PointsOffset + NumPoints * 16 > ShpData.Num()) break;
+
+		TArray<FVector> BoundaryWorldPoints;
+		BoundaryWorldPoints.Reserve(NumPoints);
+
+		const double* PointsRaw = reinterpret_cast<const double*>(&ShpData[PointsOffset]);
+		for (int32 p = 0; p < NumPoints; ++p)
+		{
+			double RawX = PointsRaw[p * 2];
+			double RawY = PointsRaw[p * 2 + 1];
+
+			FVector LocalPt(RawX, RawY, 0.f);
+			FVector WP = VisTransform.TransformPosition(LocalPt);
+			BoundaryWorldPoints.Add(WP);
+		}
+
+		if (BoundaryWorldPoints.Num() > 1 && FVector::DistSquared2D(BoundaryWorldPoints[0], BoundaryWorldPoints.Last()) < WeldDistance * WeldDistance)
+		{
+			BoundaryWorldPoints.RemoveAt(BoundaryWorldPoints.Num() - 1);
+		}
+
+		int32 BoundaryCount = BoundaryWorldPoints.Num();
+		if (BoundaryCount < 3)
+		{
+			RecordCounter++;
+			continue;
+		}
+
+		float Height = BuildingBaseFloorHeight;
+		if (Attributes.IsValidIndex(RecordCounter))
+		{
+			const FBuildingAttribute& Attr = Attributes[RecordCounter];
+			if (!Attr.Usage.Equals(TEXT("DELETED")))
+			{
+				if (Attr.Usage.Contains(TEXT("주택")) || Attr.Usage.Contains(TEXT("숙박")) || Attr.Usage.Contains(TEXT("house")) || Attr.Usage.Contains(TEXT("hotel")) || Attr.Usage.Contains(TEXT("residence")))
+				{
+					Height = Attr.FloorCount * 350.f;
+				}
+				else if (Attr.Usage.Contains(TEXT("근린생활")) || Attr.Usage.Contains(TEXT("상가")) || Attr.Usage.Contains(TEXT("shop")) || Attr.Usage.Contains(TEXT("commercial")))
+				{
+					Height = Attr.FloorCount * 400.f;
+				}
+				else
+				{
+					Height = Attr.FloorCount * 500.f;
+				}
+			}
+		}
+
+		float CommonBaseZ = 0.f;
+		if (bSnapToLandscape)
+		{
+			CommonBaseZ = GetLandscapeZ(BoundaryWorldPoints[0]);
+		}
+		else
+		{
+			CommonBaseZ = BoundaryWorldPoints[0].Z;
+		}
+
+		TArray<int32> BottomVertIDs;
+		TArray<int32> TopVertIDs;
+		BottomVertIDs.Reserve(BoundaryCount);
+		TopVertIDs.Reserve(BoundaryCount);
+
+		TArray<FVector> LocalFlatPoints;
+		LocalFlatPoints.Reserve(BoundaryCount);
+
+		for (int32 v = 0; v < BoundaryCount; ++v)
+		{
+			FVector BP = BoundaryWorldPoints[v];
+			BP.Z = CommonBaseZ;
+
+			FVector TP = BP;
+			TP.Z += Height;
+
+			BottomVertIDs.Add(NativeMesh.AppendVertex(BP));
+			TopVertIDs.Add(NativeMesh.AppendVertex(TP));
+
+			LocalFlatPoints.Add(FVector(BP.X, BP.Y, 0.f));
+		}
+
+		for (int32 i = 0; i < BoundaryCount; ++i)
+		{
+			int32 next_i = (i + 1) % BoundaryCount;
+			int32 B0 = BottomVertIDs[i];
+			int32 B1 = BottomVertIDs[next_i];
+			int32 T0 = TopVertIDs[i];
+			int32 T1 = TopVertIDs[next_i];
+
+			NativeMesh.AppendTriangle(B0, B1, T1);
+			NativeMesh.AppendTriangle(B0, T1, T0);
+		}
+
+		TArray<FIntVector> RoofTriangles;
+		if (RunDelaunayTriangulation(LocalFlatPoints, RoofTriangles))
+		{
+			for (const FIntVector& Tri : RoofTriangles)
+			{
+				FVector V0 = LocalFlatPoints[Tri.X];
+				FVector V1 = LocalFlatPoints[Tri.Y];
+				FVector V2 = LocalFlatPoints[Tri.Z];
+
+				FVector Centroid = (V0 + V1 + V2) / 3.f;
+				FVector2D Centroid2D(Centroid.X, Centroid.Y);
+
+				if (IsPointInPolygon2D(Centroid2D, LocalFlatPoints))
+				{
+					FVector E0 = V1 - V0;
+					FVector E1 = V2 - V0;
+					FVector CrossVal = FVector::CrossProduct(E0, E1);
+
+					int32 FinalY = Tri.Y;
+					int32 FinalZ = Tri.Z;
+					if (CrossVal.Z > 0.f)
+					{
+						FinalY = Tri.Z;
+						FinalZ = Tri.Y;
+					}
+
+					NativeMesh.AppendTriangle(TopVertIDs[Tri.X], TopVertIDs[FinalY], TopVertIDs[FinalZ]);
+					NativeMesh.AppendTriangle(BottomVertIDs[Tri.X], BottomVertIDs[FinalZ], BottomVertIDs[FinalY]);
+				}
+			}
+		}
+
+		RecordCounter++;
+	}
+
+	DynMesh->SetMesh(NativeMesh);
+	DynMeshComp->NotifyMeshUpdated();
+	DynMeshComp->SetComplexAsSimpleCollisionEnabled(true, true);
+
+	UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Building Mesh Generation Completed. Total Buildings Spawned: %d"), RecordCounter);
+}
+
+void AHDMapMeshGenerator::SaveBuildingToStaticMeshAsset()
+{
+	if (!OutputBuildingDynamicMeshActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: OutputBuildingDynamicMeshActor is not specified."));
+		return;
+	}
+
+	UDynamicMeshComponent* DynMeshComp = OutputBuildingDynamicMeshActor->GetDynamicMeshComponent();
+	if (!DynMeshComp) return;
+
+	UDynamicMesh* DynMesh = DynMeshComp->GetDynamicMesh();
+	if (!DynMesh || DynMesh->IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] Cannot save: DynamicMesh is empty. Please generate building mesh first."));
+		return;
+	}
+
+	if (SaveBuildingAssetPath.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AHDMapMeshGenerator] SaveBuildingAssetPath is empty. Please define a path."));
+		return;
+	}
+
+	FString PackagePath = SaveBuildingAssetPath;
+	FString AssetName;
+	int32 LastSlashIndex;
+	if (PackagePath.FindLastChar('/', LastSlashIndex))
+	{
+		AssetName = PackagePath.RightChop(LastSlashIndex + 1);
+	}
+	else
+	{
+		AssetName = PackagePath;
+		PackagePath = TEXT("/Game/") + AssetName;
+	}
+
+	UPackage* Package = CreatePackage(*PackagePath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create package at %s"), *PackagePath);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* TargetStaticMesh = Cast<UStaticMesh>(StaticLoadObject(UStaticMesh::StaticClass(), nullptr, *PackagePath));
+	if (!TargetStaticMesh)
+	{
+		TargetStaticMesh = NewObject<UStaticMesh>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+	}
+
+	if (!TargetStaticMesh)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to create or load StaticMesh object."));
+		return;
+	}
+
+	TargetStaticMesh->GetStaticMaterials().Empty();
+	for (int32 i = 0; i < DynMeshComp->GetNumMaterials(); ++i)
+	{
+		TargetStaticMesh->GetStaticMaterials().Add(FStaticMaterial(DynMeshComp->GetMaterial(i), FName(*FString::Printf(TEXT("Material_%d"), i))));
+	}
+
+	FGeometryScriptCopyMeshToAssetOptions CopyOptions;
+	CopyOptions.bEnableRecomputeNormals = true;
+	CopyOptions.bEnableRecomputeTangents = true;
+	CopyOptions.bEnableRemoveDegenerates = true;
+	FGeometryScriptMeshWriteLOD TargetLOD;
+	TargetLOD.LODIndex = 0;
+
+	EGeometryScriptOutcomePins Outcome;
+	
+	UGeometryScriptLibrary_StaticMeshFunctions::CopyMeshToStaticMesh(
+		DynMesh,
+		TargetStaticMesh,
+		CopyOptions,
+		TargetLOD,
+		Outcome
+	);
+
+	if (Outcome == EGeometryScriptOutcomePins::Success)
+	{
+		FAssetRegistryModule::AssetCreated(TargetStaticMesh);
+		TargetStaticMesh->MarkPackageDirty();
+		
+		UE_LOG(LogTemp, Log, TEXT("[AHDMapMeshGenerator] Successfully copied and saved Building StaticMesh Asset at: %s"), *PackagePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[AHDMapMeshGenerator] Failed to copy DynamicMesh to StaticMesh asset."));
+	}
+}

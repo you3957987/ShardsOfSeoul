@@ -279,9 +279,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	ADynamicMeshActor* OutputMarkDynamicMeshActor;
 
-	// 노면표시 메쉬를 Static Mesh로 구울 때 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanMark)
+	// 노면표시 메쉬를 Static Mesh 에셋을 저장할 패키지 패스 (예: /Game/HDMap/SM_NamsanMark)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
 	FString SaveMarkAssetPath;
+
+	// 건물 메쉬 생성 결과를 구워낼 타겟 Dynamic Mesh Actor (월드 상의 액터)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	ADynamicMeshActor* OutputBuildingDynamicMeshActor;
+
+	// 건물 메쉬를 Static Mesh 에셋으로 저장할 패키지 패스
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Output")
+	FString SaveBuildingAssetPath;
+
+	// 건물 외곽선 데이터 (.shp) 파일 절대 경로
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")
+	FString BuildingShpFilePath;
+
+	// 건물 속성 데이터 (.dbf) 파일 절대 경로
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")
+	FString BuildingDbfFilePath;
+
+	// 기본 건물 1층 높이 (cm 단위, 기본값 350.f = 3.5m)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Building Settings")
+	float BuildingBaseFloorHeight;
 
 	// 높이 분석 타겟으로 삼을 월드에 배치된 도로 Static Mesh Actor
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HDMap - Snap Target")
@@ -334,6 +354,14 @@ public:
 	// 생성된 노면표시 메쉬를 Static Mesh 에셋으로 저장하는 버튼
 	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
 	void SaveMarkToStaticMeshAsset();
+
+	// 건물 메쉬 생성 기능 호출 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void GenerateBuildingMesh();
+
+	// 생성된 건물 메쉬를 Static Mesh 에셋으로 저장하는 버튼
+	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
+	void SaveBuildingToStaticMeshAsset();
 
 	// [R&D] 타겟 로드 스태틱 메쉬의 폴리곤을 출력 다이내믹 메쉬로 그대로 복사하는 기능
 	UFUNCTION(CallInEditor, Category = "HDMap - Actions")
