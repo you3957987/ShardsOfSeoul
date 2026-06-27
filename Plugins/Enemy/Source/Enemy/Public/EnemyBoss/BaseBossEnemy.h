@@ -143,7 +143,7 @@ public:
 	virtual void Die();
 	// 죽음 몽타주 끝난 후 호출되는 함수 - 애님 노티파이에서 호출
 	UFUNCTION(BlueprintCallable)
-	void AfterDieMontageEnd();
+	virtual void AfterDieMontageEnd();
 	
 	// 공격 후 플레이어 주시 여부
 	bool bFocusPlayerAfterAttack = true;

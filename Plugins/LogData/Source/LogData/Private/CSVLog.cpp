@@ -135,3 +135,47 @@ void UCSVLog::AddMagicSwordManLog(const FString& LogCategory, const FBossMagicSw
 		FILEWRITE_Append
 	);
 }
+
+void UCSVLog::AddHechiLog(const FString& LogCategory, const FHechiLogData& LogData)
+{
+	// 저장 경로 설정 (Saved/CSVLogs/[LogCategory]/MagicSwordMan.csv)
+	const FString Directory = FPaths::ProjectSavedDir() / TEXT("CSVLogs") / LogCategory;
+	const FString FileName = TEXT("Hechi.csv");
+	const FString FilePath = Directory / FileName;
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	// 디렉토리 자동 생성
+	if (!PlatformFile.DirectoryExists(*Directory))
+	{
+		PlatformFile.CreateDirectoryTree(*Directory);
+	}
+
+	bool bFileExists = PlatformFile.FileExists(*FilePath);
+	FString FinalOutputString = TEXT("");
+
+	// 새 파일이면 헤더 추가
+	if (!bFileExists)
+	{
+		FinalOutputString += FHechiLogData::GetCSVHeader() + TEXT("\n");
+	}
+
+	// 데이터 백업 및 예외 처리
+	FHechiLogData FinalData = LogData;
+	if (FinalData.Base.BossID.IsEmpty())
+	{
+		FinalData.Base.BossID = TEXT("FHechiLogData_Unknown");
+	}
+
+	// CSV 행 변환 및 누적
+	FinalOutputString += FinalData.ToCSVRow() + TEXT("\n");
+
+	// 파일에 추가 저장
+	FFileHelper::SaveStringToFile(
+		FinalOutputString,
+		*FilePath,
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
+		&IFileManager::Get(),
+		FILEWRITE_Append
+	);
+}
