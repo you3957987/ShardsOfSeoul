@@ -124,6 +124,7 @@ void ABaseBossEnemy::OnPlayerDetectOverlapBegin(UPrimitiveComponent* OverlappedC
 	{
 		SpawnDefaultController();// 스폰 몽타주 사용 안하면 자동 빙의 설정
 		PlayerDetectRangeSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision); // 한 번 감지되면 비활성화
+		if ( HealthBarFlag == true ) return;
 		
 		StartBattleLog(); // 전투 로그 시작
 		
@@ -136,6 +137,8 @@ void ABaseBossEnemy::OnPlayerDetectOverlapBegin(UPrimitiveComponent* OverlappedC
 				BossHealthBar = CreateWidget<UBossHealthBarWidget>(PC, BossHealthBarWidgetClass);
 				if (BossHealthBar)
 				{
+					UE_LOG(LogTemp, Error, TEXT("BossHealthBarWidget"));
+					HealthBarFlag = true;
 					BossHealthBar->AddToViewport();
 					
 					if (BossHealthBar->FadeInAnim)
@@ -212,6 +215,7 @@ void ABaseBossEnemy::Die()
 	
 	if ( BossHealthBar )
 	{
+		UE_LOG(LogTemp, Warning, TEXT("BossHealthBar FadeOutAnim played."));
 		BossHealthBar->PlayAnimation(BossHealthBar->FadeOutAnim);
 	}
 	
@@ -462,6 +466,10 @@ void ABaseBossEnemy::TestDeadLogic()
 		GetWorld()->GetTimerManager().SetTimer(DeadTestTimerHandle, [this]()
 		{
 		 Health = 0.f;
+		 if (BossHealthBar && BossHealthBar->HealthProgressBar)
+		 {
+		 	BossHealthBar->HealthProgressBar->SetPercent(0.f);
+		 }
 		 Die();
 		}, 7.0f, false);
 	}
