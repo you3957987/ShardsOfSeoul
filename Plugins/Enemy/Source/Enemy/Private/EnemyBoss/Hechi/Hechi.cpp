@@ -33,6 +33,7 @@ void AHechi::BeginPlay()
 	
 	CommonBossLogData.BossID = BossLogId; // 로그 데이터에 보스 ID 기록
 	
+	
 	if ( bDebugMode == true )
 	{
 		GetWorldTimerManager().SetTimer(
@@ -43,6 +44,7 @@ void AHechi::BeginPlay()
 			true                                       // true = 무한 반복 실행 (false면 1번만 실행됨)
 		);
 	}
+	
 }
 
 void AHechi::Tick(float DeltaTime)
@@ -79,6 +81,8 @@ void AHechi::Die()
 {
 	FTimerManager& TimerManager = GetWorldTimerManager();
 	
+	TimerManager.ClearTimer(RepeatingTimerHandle);
+	
 	//  레이저 패턴 타이머 청소
 	TimerManager.ClearTimer(LaserTimerHandle);
 	//  레이저 발사체(연사) 패턴 타이머 청소
@@ -97,6 +101,17 @@ void AHechi::Die()
 	Super::Die();
 }
 
+void AHechi::Destroy()
+{
+	if (BossHealthBar)
+	{
+		BossHealthBar->RemoveFromParent();
+		BossHealthBar = nullptr;
+	}
+
+	Super::Destroy();
+}
+
 void AHechi::AfterDieMontageEnd()
 {
 	if ( GetMesh() )
@@ -109,11 +124,10 @@ void AHechi::AfterDieMontageEnd()
 		IItemDropInterface::Execute_HandleEnemyDeadAndDropItem(TargetCharacter, this);
 	}
 	
-	// 7초 뒤에 Destroy() 하기		
 	FTimerHandle DestroyTimerHandle;
 	GetWorldTimerManager().SetTimer(DestroyTimerHandle, [this]()
 	{
-		Destroy();
+	   Destroy(); // 그 후 안전하게 액터 삭제
 	}, 7.0f, false);
 }
 
