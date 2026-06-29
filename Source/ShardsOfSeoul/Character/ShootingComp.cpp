@@ -432,7 +432,7 @@ void UShootingComp::Fire()
 		UE_LOG(LogShardsOfSeoul, Warning, TEXT("[Shooting] Weapon Hit Actor: %s, Component: %s"), *HitActor->GetName(), *MuzzleHitResult.GetComponent()->GetName());
 		
 		// 피격한 적이 Enemy 태그를 가지고 있으면 데미지 전달
-		if (HitActor->ActorHasTag(FName("Enemy")))
+		if (HitActor->ActorHasTag(FName("Enemy")) || HitActor->ActorHasTag(FName("coloring")))
 		{
 			AController* InstigatorController = OwnerCharacter->GetController();
 			
