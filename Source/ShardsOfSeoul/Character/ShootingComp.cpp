@@ -11,6 +11,7 @@
 #include "ShardsOfSeoulCharacter.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraComponent.h"
+#include "UI/InteractionHUDWidget.h"
 
 UShootingComp::UShootingComp()
 {
@@ -64,8 +65,6 @@ void UShootingComp::BeginPlay()
 			}
 		}
 		
-		// 게임 시작 시에는 줌 변경 중이 아니므로 틱을 강제 잠재워 둡니다 (최적화)
-		SetComponentTickEnabled(false);
 	}
 }
 
@@ -90,8 +89,7 @@ void UShootingComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 			// 조준이 풀린 완료 상황에서만 틱을 완전히 잠재웁니다 (조준 중에는 실시간 사거리 조준 피드백을 위해 틱을 유지합니다)
 			if (!bIsAiming)
 			{
-				SetComponentTickEnabled(false);
-				UE_LOG(LogShardsOfSeoul, Warning, TEXT("[Shooting] Camera returned to default view. Disabling Tick."));
+				UE_LOG(LogShardsOfSeoul, Warning, TEXT("[Shooting] Camera returned to default view."));
 			}
 		}
 		else
@@ -102,13 +100,13 @@ void UShootingComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		}
 	}
 
-	// 2. 조준 중일 때 매 틱마다 사정거리 내 타격 유효 검출 및 크로스헤어 UI 투명도 업데이트
-	if (bIsAiming && AimWidgetInstance && CameraComp)
+	// 2. 상시(조준 여부 무관) 시선 방향 내 타격 유효 검출 및 상호작용 HUD 위젯 실시간 업데이트
+	if (CameraComp && OwnerCharacter)
 	{
 		TArray<AActor*> ActorsToIgnore;
 		ActorsToIgnore.Add(OwnerCharacter);
 
-		// 2-1. 카메라 조준점(영점 일치점) 1차 검출
+		// 카메라 시선 방향 트레이스
 		FVector CamStartLoc = CameraComp->GetComponentLocation();
 		FVector CamForwardDir = CameraComp->GetForwardVector();
 		FVector CamEndLoc = CamStartLoc + (CamForwardDir * MaxFireDistance);
@@ -127,44 +125,112 @@ void UShootingComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 		);
 		
 		FVector TargetWorldLoc = bCamHit ? CamHitResult.ImpactPoint : CamEndLoc;
+		AActor* HitActor = bCamHit ? CamHitResult.GetActor() : nullptr;
 
-		// 2-2. 총구 위치 획득
-		FVector MuzzleLoc = FVector::ZeroVector;
-		FRotator MuzzleRot = FRotator::ZeroRotator;
-		GetMuzzleLocationAndRotation(MuzzleLoc, MuzzleRot);
-
-		// 2-3. 실제 총구에서 조준 방향으로의 사정거리 유효 트레이스 수행
-		FVector FireDir = (TargetWorldLoc - MuzzleLoc).GetSafeNormal();
-		FVector MuzzleTraceEnd = MuzzleLoc + (FireDir * MaxFireDistance);
-
-		FHitResult RangeCheckHit;
-		bool bValidTargetInRange = UKismetSystemLibrary::LineTraceSingle(
-			GetWorld(),
-			MuzzleLoc,
-			MuzzleTraceEnd,
-			UEngineTypes::ConvertToTraceType(ECC_Visibility),
-			false,
-			ActorsToIgnore,
-			EDrawDebugTrace::None, // 디버그 드로우 안함
-			RangeCheckHit,
-			true
-		);
-		
-		// 무언가 사격 거리에 닿으면 진하게(1.0), 닿지 않는 허공이면 흐리게(DefaultWidgetOpacity) 실시간 보간 처리
-		float CurrentOpacity = AimWidgetInstance->GetRenderOpacity();
-		float TargetOpacity = bValidTargetInRange ? 1.f : DefaultWidgetOpacity;
-		
-		// 투명도 변경이 너무 급격히 튄다면 FInterpTo로 약간의 스무딩을 가해 부드럽게 깜빡이도록 연출
-		float NewOpacity = FMath::FInterpTo(CurrentOpacity, TargetOpacity, DeltaTime, 15.f);
-		AimWidgetInstance->SetRenderOpacity(NewOpacity);
-
-		// coloring 태그를 가진 액터 타겟팅 및 스텐실 실시간 아웃라인 토글 연동
-		AActor* HitActor = bValidTargetInRange ? RangeCheckHit.GetActor() : nullptr;
-		if (HitActor && HitActor->ActorHasTag(FName("coloring")))
+		// 2-1. 조준(줌) 상태일 때에만 추가적으로 총구 발사 궤적 트레이스를 돌려 크로스헤어 UI 투명도 업데이트
+		if (bIsAiming && AimWidgetInstance)
 		{
-			if (LastColoringTargetActor.Get() != HitActor)
+			FVector MuzzleLoc = FVector::ZeroVector;
+			FRotator MuzzleRot = FRotator::ZeroRotator;
+			GetMuzzleLocationAndRotation(MuzzleLoc, MuzzleRot);
+
+			FVector FireDir = (TargetWorldLoc - MuzzleLoc).GetSafeNormal();
+			FVector MuzzleTraceEnd = MuzzleLoc + (FireDir * MaxFireDistance);
+
+			FHitResult RangeCheckHit;
+			bool bMuzzleTraceHit = UKismetSystemLibrary::LineTraceSingle(
+				GetWorld(),
+				MuzzleLoc,
+				MuzzleTraceEnd,
+				UEngineTypes::ConvertToTraceType(ECC_Visibility),
+				false,
+				ActorsToIgnore,
+				EDrawDebugTrace::None,
+				RangeCheckHit,
+				true
+			);
+
+			// 무언가 사격 거리에 닿으면 진하게(1.0), 닿지 않는 허공이면 흐리게(DefaultWidgetOpacity) 실시간 보간 처리
+			float CurrentOpacity = AimWidgetInstance->GetRenderOpacity();
+			float TargetOpacity = bMuzzleTraceHit ? 1.f : DefaultWidgetOpacity;
+			float NewOpacity = FMath::FInterpTo(CurrentOpacity, TargetOpacity, DeltaTime, 15.f);
+			AimWidgetInstance->SetRenderOpacity(NewOpacity);
+		}
+
+		// 2-2. coloring 태그를 가진 액터 타겟팅 및 상용 상시 활성화 HUD 화면 투영 위치 갱신
+		AShardsOfSeoulCharacter* Character = Cast<AShardsOfSeoulCharacter>(OwnerCharacter);
+		if (Character)
+		{
+			if (HitActor && HitActor->ActorHasTag(FName("coloring")))
 			{
-				// 1. 이전 타겟 아웃라인(스텐실 1) 끄기 (스텐실 값이 2가 아니라면 안전하게 차단)
+				// 실시간 화면 2D 좌표 투영
+				FVector2D ScreenPos;
+				APlayerController* PC = Cast<APlayerController>(Character->GetController());
+				if (PC && PC->ProjectWorldLocationToScreen(CamHitResult.ImpactPoint, ScreenPos))
+				{
+					// 조준선 가림 방지 오프셋 적용
+					ScreenPos.X += 30.f;
+					ScreenPos.Y -= 15.f;
+
+					FText TargetDesc;
+					FProperty* DescProp = HitActor->GetClass()->FindPropertyByName(FName("DescriptionText"));
+					if (DescProp)
+					{
+						DescProp->GetValue_InContainer(HitActor, &TargetDesc);
+					}
+					else
+					{
+						TargetDesc = FText::FromString(TEXT("컬러링 가능"));
+					}
+
+					// C++ 직접 호출 연동 (리플렉션 없음)
+					if (Character->InteractionHUDInstance)
+					{
+						Character->CurrentInteractionHUDOwner = HitActor;
+						Character->InteractionHUDInstance->UpdateTargetUI(ScreenPos, TargetDesc);
+					}
+				}
+
+				// 아웃라인 활성화 (스텐실 1)
+				if (LastColoringTargetActor.Get() != HitActor)
+				{
+					if (LastColoringTargetActor.IsValid())
+					{
+						TArray<UPrimitiveComponent*> PrimitiveComps;
+						LastColoringTargetActor->GetComponents<UPrimitiveComponent>(PrimitiveComps);
+						for (UPrimitiveComponent* PrimComp : PrimitiveComps)
+						{
+							if (PrimComp && PrimComp->CustomDepthStencilValue == 1)
+							{
+								PrimComp->SetRenderCustomDepth(false);
+							}
+						}
+					}
+
+					TArray<UPrimitiveComponent*> PrimitiveComps;
+					HitActor->GetComponents<UPrimitiveComponent>(PrimitiveComps);
+					for (UPrimitiveComponent* PrimComp : PrimitiveComps)
+					{
+						if (PrimComp && PrimComp->CustomDepthStencilValue != 2)
+						{
+							PrimComp->SetRenderCustomDepth(true);
+							PrimComp->SetCustomDepthStencilValue(1);
+						}
+					}
+
+					LastColoringTargetActor = HitActor;
+				}
+			}
+			else
+			{
+				// 오직 내가 소유했던 타겟을 상실했을 때만 다른 컴포넌트 간섭 없이 HUD 숨기기 처리
+				if (Character->InteractionHUDInstance && Character->CurrentInteractionHUDOwner == LastColoringTargetActor.Get())
+				{
+					Character->InteractionHUDInstance->HideTargetUI();
+					Character->CurrentInteractionHUDOwner = nullptr;
+				}
+
+				// 아웃라인 해제
 				if (LastColoringTargetActor.IsValid())
 				{
 					TArray<UPrimitiveComponent*> PrimitiveComps;
@@ -176,38 +242,8 @@ void UShootingComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 							PrimComp->SetRenderCustomDepth(false);
 						}
 					}
+					LastColoringTargetActor = nullptr;
 				}
-
-				// 2. 새로운 타겟 아웃라인 켜기 (이미 스텐실 2번(채도 복원 완료) 상태가 아니라면 스텐실 1 할당)
-				TArray<UPrimitiveComponent*> PrimitiveComps;
-				HitActor->GetComponents<UPrimitiveComponent>(PrimitiveComps);
-				for (UPrimitiveComponent* PrimComp : PrimitiveComps)
-				{
-					if (PrimComp && PrimComp->CustomDepthStencilValue != 2)
-					{
-						PrimComp->SetRenderCustomDepth(true);
-						PrimComp->SetCustomDepthStencilValue(1);
-					}
-				}
-
-				LastColoringTargetActor = HitActor;
-			}
-		}
-		else
-		{
-			// 타겟을 아예 잃었거나 coloring 태그가 없는 경우 이전 타겟 아웃라인 해제
-			if (LastColoringTargetActor.IsValid())
-			{
-				TArray<UPrimitiveComponent*> PrimitiveComps;
-				LastColoringTargetActor->GetComponents<UPrimitiveComponent>(PrimitiveComps);
-				for (UPrimitiveComponent* PrimComp : PrimitiveComps)
-				{
-					if (PrimComp && PrimComp->CustomDepthStencilValue == 1)
-					{
-						PrimComp->SetRenderCustomDepth(false);
-					}
-				}
-				LastColoringTargetActor = nullptr;
 			}
 		}
 	}
@@ -317,12 +353,7 @@ void UShootingComp::Fire()
 
 	if (!OwnerCharacter || !CameraComp) return;
 
-	// 움직이고 있는 상태에서는 사격을 아예 제한 (제자리에 멈춰 서서만 사격 가능)
-	if (OwnerCharacter->GetVelocity().Size2D() > 10.f)
-	{
-		UE_LOG(LogShardsOfSeoul, Warning, TEXT("[Shooting] Cannot fire while moving. Must stand still."));
-		return;
-	}
+
 
 	// 사격 애니메이션 몽타주 재생
 	if (FireMontage)
@@ -334,6 +365,12 @@ void UShootingComp::Fire()
 	FVector MuzzleLoc = FVector::ZeroVector;
 	FRotator MuzzleRot = FRotator::ZeroRotator;
 	GetMuzzleLocationAndRotation(MuzzleLoc, MuzzleRot);
+	
+	// 사격 사운드 재생
+	if (FireSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(GetWorld(), FireSound, MuzzleLoc);
+	}
 	
 	TArray<AActor*> ActorsToIgnore;
 	ActorsToIgnore.Add(OwnerCharacter);
@@ -410,19 +447,26 @@ void UShootingComp::Fire()
 		}
 	}
 
-	// 5. 피격점 위치에 피격(스파크/먼지) 나이아가라 VFX 스폰
+	// 5. 피격점 위치에 피격(스파크/먼지) 나이아가라 VFX 및 사운드 스폰
 	// 대부분의 먼지/스파크 VFX 이미터는 로컬 Z축(0,0,1) 방향으로 분사되도록 설계되어 있습니다.
 	// 따라서 단순 Rotation() 대신 MakeFromZ를 이용해 법면 방향이 이펙트의 로컬 Z축이 되도록 정렬하여 스폰합니다.
 	// 랜드스케이프(지형)나 평지 피격 시 지면 아래로 파편이 파묻혀 가려지는 클리핑 현상을 막기 위해, 법면 방향으로 미세하게(5.f 유닛) 오프셋을 띄워 스폰합니다.
-	if (bMuzzleHit && ImpactEffect)
+	if (bMuzzleHit)
 	{
 		FVector SprungHitPoint = HitPoint + (MuzzleHitResult.ImpactNormal * 5.f);
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-			GetWorld(),
-			ImpactEffect,
-			SprungHitPoint,
-			FRotationMatrix::MakeFromZ(MuzzleHitResult.ImpactNormal).Rotator()
-		);
+		if (ImpactEffect)
+		{
+			UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				GetWorld(),
+				ImpactEffect,
+				SprungHitPoint,
+				FRotationMatrix::MakeFromZ(MuzzleHitResult.ImpactNormal).Rotator()
+			);
+		}
+		if (ImpactSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(GetWorld(), ImpactSound, SprungHitPoint);
+		}
 	}
 	
 	// 실제 타격 판정 및 데미지 처리

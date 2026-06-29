@@ -13,6 +13,7 @@ class UShootingComp;
 class USpringArmComponent;
 class UCameraComponent;
 class UInputAction;
+class UInteractionHUDWidget;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -127,5 +128,15 @@ private:
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="State", meta = (AllowPrivateAccess = "true"))
 	bool IsClimbing = false;
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<class UInteractionHUDWidget> InteractionHUDClass;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UI", meta = (AllowPrivateAccess = "true"))
+	class UInteractionHUDWidget* InteractionHUDInstance;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UI", meta = (AllowPrivateAccess = "true"))
+	class AActor* CurrentInteractionHUDOwner = nullptr;
 };
 

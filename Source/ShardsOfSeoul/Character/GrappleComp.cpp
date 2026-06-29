@@ -1,4 +1,7 @@
 #include "GrappleComp.h"
+#include "ShardsOfSeoulCharacter.h"
+#include "Blueprint/UserWidget.h"
+#include "UI/InteractionHUDWidget.h"
 
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
@@ -58,6 +61,42 @@ void UGrappleComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCom
 
 	// 최적의 자동 조준 대상을 찾아 캐싱
 	SetCurrentTargetActor(FindBestGrappleTarget());
+
+	// 그래플 조준 타겟이 있는 동안 실시간 UI 화면 좌표 매핑 틱 작동
+	if (CurrentTargetActor && Owner)
+	{
+		AShardsOfSeoulCharacter* Character = Cast<AShardsOfSeoulCharacter>(Owner);
+		if (Character && Character->InteractionHUDInstance)
+		{
+			APlayerController* PC = Cast<APlayerController>(Character->GetController());
+			if (PC)
+			{
+				FVector TargetWorldLoc = CurrentTargetActor->GetActorLocation();
+				FVector2D ScreenPosition;
+
+				// 3D 좌표를 2D 화면 픽셀 좌표로 변환
+				if (PC->ProjectWorldLocationToScreen(TargetWorldLoc, ScreenPosition))
+				{
+					// 조준선 가림 방지 오프셋 보정
+					ScreenPosition.X += 30.f;
+					ScreenPosition.Y -= 15.f;
+
+					FText TargetDesc;
+					FProperty* DescProp = CurrentTargetActor->GetClass()->FindPropertyByName(FName("DescriptionText"));
+					if (DescProp)
+					{
+						DescProp->GetValue_InContainer(CurrentTargetActor, &TargetDesc);
+					}
+					else
+					{
+						TargetDesc = FText::FromString(TEXT("E"));
+					}
+
+					Character->InteractionHUDInstance->UpdateTargetUI(ScreenPosition, TargetDesc);
+				}
+			}
+		}
+	}
 }
 
 void UGrappleComp::Grapple()
@@ -249,6 +288,13 @@ void UGrappleComp::SetCurrentTargetActor(AActor* NewTarget)
 	if (CurrentTargetActor)
 	{
 		SetActorCustomDepth(CurrentTargetActor, false);
+
+		AShardsOfSeoulCharacter* Character = Cast<AShardsOfSeoulCharacter>(Owner);
+		if (Character && Character->InteractionHUDInstance && Character->CurrentInteractionHUDOwner == CurrentTargetActor)
+		{
+			Character->InteractionHUDInstance->HideTargetUI();
+			Character->CurrentInteractionHUDOwner = nullptr;
+		}
 	}
 
 	CurrentTargetActor = NewTarget;
@@ -257,6 +303,24 @@ void UGrappleComp::SetCurrentTargetActor(AActor* NewTarget)
 	{
 		// 그래플 목표 타겟은 윤곽선 아웃라인(스텐실 1번 효과)을 적용합니다.
 		SetActorCustomDepth(CurrentTargetActor, true, 1);
+
+		AShardsOfSeoulCharacter* Character = Cast<AShardsOfSeoulCharacter>(Owner);
+		if (Character && Character->InteractionHUDInstance)
+		{
+			FText TargetDesc;
+			FProperty* DescProp = CurrentTargetActor->GetClass()->FindPropertyByName(FName("DescriptionText"));
+			if (DescProp)
+			{
+				DescProp->GetValue_InContainer(CurrentTargetActor, &TargetDesc);
+			}
+			else
+			{
+				TargetDesc = FText::FromString(TEXT("E"));
+			}
+
+			Character->CurrentInteractionHUDOwner = CurrentTargetActor;
+			Character->InteractionHUDInstance->UpdateTargetUI(FVector2D::ZeroVector, TargetDesc);
+		}
 	}
 }
 

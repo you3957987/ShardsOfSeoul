@@ -92,6 +92,12 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting|FX", meta = (AllowPrivateAccess = "true"))
 	class UNiagaraSystem* ImpactEffect;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting|Sound", meta = (AllowPrivateAccess = "true"))
+	class USoundBase* FireSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting|Sound", meta = (AllowPrivateAccess = "true"))
+	class USoundBase* ImpactSound;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawDebugLine = true;
 

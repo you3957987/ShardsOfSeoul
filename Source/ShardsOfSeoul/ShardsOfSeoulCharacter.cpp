@@ -15,6 +15,8 @@
 
 #include "Character/GrappleComp.h"
 #include "Character/ShootingComp.h"
+#include "Blueprint/UserWidget.h"
+#include "UI/InteractionHUDWidget.h"
 
 AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 {
@@ -63,6 +65,20 @@ void AShardsOfSeoulCharacter::BeginPlay()
 	SprintComp = FindComponentByClass<USprintComp>();
 	GrappleComp = FindComponentByClass<UGrappleComp>();
 	ShootingComp = FindComponentByClass<UShootingComp>();
+
+	// 상시 상호작용 2D HUD 위젯 스폰 및 뷰포트 등록
+	if (InteractionHUDClass)
+	{
+		APlayerController* PC = Cast<APlayerController>(GetController());
+		if (PC)
+		{
+			InteractionHUDInstance = CreateWidget<UInteractionHUDWidget>(PC, InteractionHUDClass);
+			if (InteractionHUDInstance)
+			{
+				InteractionHUDInstance->AddToViewport();
+			}
+		}
+	}
 }
 
 void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
