@@ -14,6 +14,7 @@
 #include <Character/SprintComp.h>
 
 #include "Character/GrappleComp.h"
+#include "Character/ShootingComp.h"
 
 AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 {
@@ -28,6 +29,7 @@ AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 	// Configure character movement
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	GetCharacterMovement()->RotationRate = FRotator(0.0f, 500.0f, 0.0f);
+	GetCharacterMovement()->GetNavAgentPropertiesRef().bCanCrouch = true; // 웅크리기 기능 활성화
 
 	// Note: For faster iteration times these variables, and many more, can be tweaked in the Character Blueprint
 	// instead of recompiling to adjust them
@@ -51,9 +53,16 @@ AShardsOfSeoulCharacter::AShardsOfSeoulCharacter()
 
 	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
 	// are set in the derived blueprint asset named ThirdPersonCharacter (to avoid direct content references in C++)
-	SprintComp = CreateDefaultSubobject<USprintComp>(TEXT("SprintComponent"));
+}
+
+void AShardsOfSeoulCharacter::BeginPlay()
+{
+	Super::BeginPlay();
 	
-	GrappleComp = CreateDefaultSubobject<UGrappleComp>(TEXT("GrappleComp"));
+	// 블루프린트에서 수동 추가한 컴포넌트들을 동적으로 캐싱 연동
+	SprintComp = FindComponentByClass<USprintComp>();
+	GrappleComp = FindComponentByClass<UGrappleComp>();
+	ShootingComp = FindComponentByClass<UShootingComp>();
 }
 
 void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -72,14 +81,25 @@ void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerI
 		// Looking
 		EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AShardsOfSeoulCharacter::Look);
 		
-		if (SprintComp)
+		// 런타임 바인딩 시점에도 컴포넌트를 동적으로 재검색 및 검증
+		SprintComp = FindComponentByClass<USprintComp>();
+		GrappleComp = FindComponentByClass<UGrappleComp>();
+		ShootingComp = FindComponentByClass<UShootingComp>();
+
+		if (SprintComp && SprintAction)
 		{
 			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Started, SprintComp, &USprintComp::StartSprint);
 			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Completed, SprintComp, &USprintComp::StopSprint);
 		}
-		if (GrappleComp)
+		if (GrappleComp && GrappleAction)
 		{
 			EnhancedInputComponent->BindAction(GrappleAction, ETriggerEvent::Started, GrappleComp, &UGrappleComp::Grapple);
+		}
+		if (ShootingComp && AimAction && FireAction)
+		{
+			EnhancedInputComponent->BindAction(AimAction, ETriggerEvent::Started, ShootingComp, &UShootingComp::StartAiming);
+			EnhancedInputComponent->BindAction(AimAction, ETriggerEvent::Completed, ShootingComp, &UShootingComp::StopAiming);
+			EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Started, ShootingComp, &UShootingComp::Fire);
 		}
 	}
 	else

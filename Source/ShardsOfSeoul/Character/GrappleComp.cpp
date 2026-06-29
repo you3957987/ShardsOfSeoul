@@ -7,6 +7,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Animation/AnimInstance.h"
+#include "Components/PrimitiveComponent.h"
 
 UGrappleComp::UGrappleComp()
 {
@@ -56,7 +57,7 @@ void UGrappleComp::TickComponent(float DeltaTime, ELevelTick TickType, FActorCom
 	}
 
 	// 최적의 자동 조준 대상을 찾아 캐싱
-	CurrentTargetActor = FindBestGrappleTarget();
+	SetCurrentTargetActor(FindBestGrappleTarget());
 }
 
 void UGrappleComp::Grapple()
@@ -69,7 +70,7 @@ void UGrappleComp::Grapple()
 	// 비행 시작 전 혹시 타겟이 비어 있다면 즉시 재탐색
 	if (!CurrentTargetActor)
 	{
-		CurrentTargetActor = FindBestGrappleTarget();
+		SetCurrentTargetActor(FindBestGrappleTarget());
 	}
 
 	// 자동 조준된 타겟이 존재하면 애니메이션 재생 및 타이머 설정
@@ -142,7 +143,7 @@ void UGrappleComp::StartGrappleMove()
 	}
 
 	// 런치 완료 후 대상 포인터 정리
-	CurrentTargetActor = nullptr;
+	SetCurrentTargetActor(nullptr);
 }
 
 bool UGrappleComp::IsGrapplingOrPreparing() const
@@ -165,7 +166,7 @@ void UGrappleComp::RemoveGrappleTarget(AActor* TargetActor)
 		GrappleTargets.Remove(TargetActor);
 		if (CurrentTargetActor == TargetActor)
 		{
-			CurrentTargetActor = nullptr;
+			SetCurrentTargetActor(nullptr);
 		}
 	}
 }
@@ -239,4 +240,41 @@ AActor* UGrappleComp::FindBestGrappleTarget() const
 	}
 
 	return BestTarget;
+}
+
+void UGrappleComp::SetCurrentTargetActor(AActor* NewTarget)
+{
+	if (CurrentTargetActor == NewTarget) return;
+
+	if (CurrentTargetActor)
+	{
+		SetActorCustomDepth(CurrentTargetActor, false);
+	}
+
+	CurrentTargetActor = NewTarget;
+
+	if (CurrentTargetActor)
+	{
+		// 그래플 목표 타겟은 윤곽선 아웃라인(스텐실 1번 효과)을 적용합니다.
+		SetActorCustomDepth(CurrentTargetActor, true, 1);
+	}
+}
+
+void UGrappleComp::SetActorCustomDepth(AActor* Target, bool bEnable, int32 StencilValue)
+{
+	if (!Target) return;
+
+	TArray<UPrimitiveComponent*> PrimitiveComponents;
+	Target->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+	for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+	{
+		if (PrimComp)
+		{
+			PrimComp->SetRenderCustomDepth(bEnable);
+			if (bEnable)
+			{
+				PrimComp->SetCustomDepthStencilValue(StencilValue);
+			}
+		}
+	}
 }

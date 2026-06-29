@@ -9,6 +9,7 @@
 
 class USprintComp;
 class UGrappleComp;
+class UShootingComp;
 class USpringArmComponent;
 class UCameraComponent;
 class UInputAction;
@@ -56,6 +57,12 @@ protected:
 	
 	UPROPERTY(EditAnywhere, Category="Input")
 	UInputAction* GrappleAction;
+
+	UPROPERTY(EditAnywhere, Category="Input")
+	UInputAction* AimAction;
+
+	UPROPERTY(EditAnywhere, Category="Input")
+	UInputAction* FireAction;
 	
 public:
 
@@ -63,6 +70,7 @@ public:
 	AShardsOfSeoulCharacter();	
 
 protected:
+	virtual void BeginPlay() override;
 
 	/** Initialize input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -113,6 +121,9 @@ private:
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UGrappleComp* GrappleComp;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	UShootingComp* ShootingComp;
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="State", meta = (AllowPrivateAccess = "true"))
 	bool IsClimbing = false;

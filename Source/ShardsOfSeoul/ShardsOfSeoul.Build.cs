@@ -23,7 +23,8 @@ public class ShardsOfSeoul : ModuleRules
 			"GeometryFramework",
 			"DynamicMesh",
 			"GeometryCore",
-			"Landscape"
+			"Landscape",
+			"Niagara"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

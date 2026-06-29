@@ -1,4 +1,4 @@
-﻿#include "SprintComp.h"
+#include "SprintComp.h"
 
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"

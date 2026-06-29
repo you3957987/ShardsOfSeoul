@@ -1,10 +1,10 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "SprintComp.generated.h"
 
-UCLASS()
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class SHARDSOFSEOUL_API USprintComp : public UActorComponent
 {
 	GENERATED_BODY()

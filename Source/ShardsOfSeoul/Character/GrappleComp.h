@@ -4,7 +4,7 @@
 #include "Components/ActorComponent.h"
 #include "GrappleComp.generated.h"
 
-UCLASS()
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class SHARDSOFSEOUL_API UGrappleComp : public UActorComponent
 {
 	GENERATED_BODY()
@@ -75,4 +75,8 @@ private:
 	bool bShouldHoldInAir = false;
 	FVector GrappleTargetLocation;
 	float GrappleActiveTime = 0.f;
+
+private:
+	void SetCurrentTargetActor(class AActor* NewTarget);
+	void SetActorCustomDepth(class AActor* Target, bool bEnable, int32 StencilValue = 1);
 };
