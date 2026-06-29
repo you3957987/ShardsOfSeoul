@@ -79,6 +79,10 @@ void AShardsOfSeoulCharacter::BeginPlay()
 			}
 		}
 	}
+	else
+	{
+		UE_LOG(LogShardsOfSeoul, Warning, TEXT("[Character] InteractionHUDClass is null! Please assign it in Blueprint."));
+	}
 }
 
 void AShardsOfSeoulCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
