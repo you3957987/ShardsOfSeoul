@@ -12,12 +12,19 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraComponent.h"
 #include "UI/InteractionHUDWidget.h"
+#include "Kismet/KismetMaterialLibrary.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "SOSImpactIndicator.h"
 
 UShootingComp::UShootingComp()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	// 보간 동작 시 엇박자 흔들림 방지를 위해 물리 처리 후로 틱 배치
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+
+	LastHitPoint = FVector::ZeroVector;
+	MPC_Coloring = nullptr;
+	ImpactIndicatorClass = nullptr;
 }
 
 void UShootingComp::BeginPlay()
@@ -431,6 +438,14 @@ void UShootingComp::Fire()
 	// 4. 리본 나이아가라 총알 궤적(Tracer) VFX 스폰
 	// 아무것도 맞지 않았을 때(허공 사격)는 총구 발사 방향으로 최대 사거리(MaxFireDistance)까지 빔을 연장하여 리본이 도중에 끊기지 않게 방지합니다.
 	FVector HitPoint = bMuzzleHit ? MuzzleHitResult.ImpactPoint : (MuzzleLoc + FireDir * MaxFireDistance);
+	LastHitPoint = HitPoint;
+
+	// MPC_Coloring의 HitLocation 벡터 파라미터 업데이트
+	if (MPC_Coloring && GetWorld())
+	{
+		FLinearColor HitColorPos(HitPoint.X, HitPoint.Y, HitPoint.Z, 1.0f);
+		UKismetMaterialLibrary::SetVectorParameterValue(GetWorld(), MPC_Coloring, FName("HitLocation"), HitColorPos);
+	}
 	
 	if (TracerEffect)
 	{
@@ -469,6 +484,19 @@ void UShootingComp::Fire()
 		}
 	}
 	
+	// 피격 시 SOSImpactIndicator 스폰
+	if (bMuzzleHit && ImpactIndicatorClass && GetWorld())
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = OwnerCharacter;
+		SpawnParams.Instigator = OwnerCharacter;
+		
+		FVector SpawnLoc = LastHitPoint;
+		FRotator SpawnRot = FRotationMatrix::MakeFromZ(MuzzleHitResult.ImpactNormal).Rotator();
+		
+		GetWorld()->SpawnActor<ASOSImpactIndicator>(ImpactIndicatorClass, SpawnLoc, SpawnRot, SpawnParams);
+	}
+
 	// 실제 타격 판정 및 데미지 처리
 	if (bMuzzleHit && MuzzleHitResult.GetActor())
 	{

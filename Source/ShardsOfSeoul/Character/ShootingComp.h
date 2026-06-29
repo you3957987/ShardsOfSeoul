@@ -109,4 +109,13 @@ private:
 
 	UPROPERTY()
 	TWeakObjectPtr<class AActor> LastColoringTargetActor = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Combat|Shooting", meta = (AllowPrivateAccess = "true"))
+	FVector LastHitPoint;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting", meta = (AllowPrivateAccess = "true"))
+	class UMaterialParameterCollection* MPC_Coloring;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Shooting", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<class ASOSImpactIndicator> ImpactIndicatorClass;
 };
