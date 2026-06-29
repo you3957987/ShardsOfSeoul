@@ -178,6 +178,8 @@ public:
 	// 특수 패턴 수행할 체력 비율 0 ~ 1
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
 	float ChangeMapHealthThreshold = 0.5f;
+	UPROPERTY(EditDefaultsOnly, Category = "자체설정")
+	float LoopChangePostProcess = 8.f;
 	void StartChangeMapPattern();
 	bool bIsChangeMap = false;
 	UPROPERTY(EditDefaultsOnly, Category = "자체설정")

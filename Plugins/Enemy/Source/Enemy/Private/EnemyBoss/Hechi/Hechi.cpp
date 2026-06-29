@@ -79,6 +79,8 @@ float AHechi::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEv
 
 void AHechi::Die()
 {
+	ShakeCamera();
+	
 	FTimerManager& TimerManager = GetWorldTimerManager();
 	
 	TimerManager.ClearTimer(RepeatingTimerHandle);
@@ -969,7 +971,7 @@ void AHechi::StartLoopPostProcessChange()
 		PostProcessLoopHandle,
 		this,
 		&AHechi::RandomChangePostProcess,
-		3.0f, // 5초 간격
+		LoopChangePostProcess,
 		true  // true = 무한 반복 실행
 	);
 }
