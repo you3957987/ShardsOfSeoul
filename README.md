@@ -124,7 +124,7 @@
 
 <div align="center">
 
-| 파이어볼 | 레이저 패턴 |
+| 파이어볼 | 레이저 캐스트 |
 | :---: | :---: |
 | <img width="350" alt="파이어볼" src="./portfolio/보스/파이어볼.gif" /> | <img width="350" alt="레이저 패턴" src="./portfolio/보스/레이저%20패턴.gif" /> |
 
@@ -132,7 +132,7 @@
 | :---: | :---: |
 | <img width="350" alt="중력 제어" src="./portfolio/보스/중력%20제어.gif" /> | <img width="350" alt="텔레포트" src="./portfolio/보스/텔레포트.gif" /> |
 
-| 맵 전환 | 포스트 전환 |
+| 차원 이동 | 테마 변경 |
 | :---: | :---: |
 | <img width="350" alt="맵 전환" src="./portfolio/보스/맵%20전환.gif" /> | <img width="350" alt="포스트 전환" src="./portfolio/보스/포스트%20전환.gif" /> |
 
@@ -144,7 +144,19 @@
 
 #### 🗺️ 스테이지
 
-> 🔗 [스테이지 갤러리 위젯 보기](https://indify.co/widgets/live/gallery/jwGGOeWNnu9oBuhLnooQ)
+<div align="center">
+
+| 기본 서울 어린이 대공원 | 카툰풍 서울 어린이 대공원 | 스케치풍 서울 어린이 대공원 |
+| :---: | :---: | :---: |
+| <img width="260" alt="그냥 어린이 대공원" src="https://github.com/user-attachments/assets/08a90b46-a60c-4bc8-9518-7554b79c9031" /> | <img width="260" alt="어린이 대공원 첫 변화" src="https://github.com/user-attachments/assets/7b9c9612-b4c9-4147-a9c8-5089de491dda" /> | <img width="260" alt="어린이 대공원 핸드 드로우" src="https://github.com/user-attachments/assets/053b4a79-a091-4085-b020-0260a169ec33" /> |
+
+| 남산 타워 | 회현역 |
+| :---: | :---: |
+| <img width="380" alt="남산 1" src="https://github.com/user-attachments/assets/41553921-9f3f-47d7-9aa0-9e0ca7dbe918" /> | <img width="380" alt="회현역" src="https://github.com/user-attachments/assets/ec1479fc-cf4e-43f0-ab75-ee824f5786db" /> |
+
+</div>
+
+<br>
 
 - **회현역 (시작 스테이지) :**
   - 몬스터와의 전투는 물론, 타이밍에 맞춰 크레인 발판을 건너거나 공중의 훅을 걸어 이동하는 등 플랫포머 슈팅 액션의 핵심을 경험하는 맵입니다. 
