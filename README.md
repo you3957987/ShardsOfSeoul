@@ -66,7 +66,7 @@
 - **조준 및 사격 액션 :**
 
 <p align="center">
-  <img width="500" alt="조준" src="./portfolio/조준.png" />
+  <img width="500" alt="조준" src="./portfolio/HUD%20및%20UI/조준.png" />
 </p>
 
   - `WASD`와 `스페이스바`를 이용해 자유롭게 3D 공간을 이동하며 점프할 수 있습니다.
@@ -77,7 +77,7 @@
 - **슈팅을 통한 환경 제어 (Coloring) :**
 
 <p align="center">
-  <img width="550" alt="컬러링" src="./portfolio/컬러링.gif" />
+  <img width="550" alt="컬러링" src="./portfolio/HUD%20및%20UI/컬러링.gif" />
 </p>
 
   - 무채색으로 비활성화된 특정 오브젝트에 사격하여 '색'을 부여하고 활성화합니다.
@@ -88,7 +88,7 @@
 - **입체적 기동 (Hook 이동) :**
 
 <p align="center">
-  <img width="550" alt="훅 이동" src="./portfolio/훅%20이동.gif" />
+  <img width="550" alt="훅 이동" src="./portfolio/HUD%20및%20UI/훅%20이동.gif" />
 </p>
 
   - 맵 곳곳에 배치된 훅(Hook) 포인트와 상호작용(`F` 키)하여 목표 지점을 향해 빠르게 날아가는 와이어 액션을 구사합니다.
@@ -97,8 +97,6 @@
 <br>
 
 #### 🖥️ HUD 및 UI
-
-> 🔗 [HUD 및 UI 갤러리 위젯 보기](https://indify.co/widgets/live/gallery/6n5HYOiaZKPTmt9fzWcK)
 
 - **동적 크로스헤어 UI :**
   - 조준 상태(`마우스 우클릭`)로 진입 시 화면 중앙에 원형 크로스헤어가 활성화되어 탄착점을 명확히 인지하고 정밀하게 사격할 수 있습니다.
@@ -114,6 +112,10 @@
 > 세부적인 몬스터 AI 메커니즘과 행동 패턴은 [해당 노션 페이지](https://app.notion.com/p/3318942a9aa680b7808ac55d9dce4ec4?pvs=21)에서 확인하실 수 있습니다.
 
 - **해치 (보스 몬스터) :** 남산 타워 및 어린이 대공원 맵 보스
+
+<p align="center">
+  <img width="500" height="666" alt="해치" src="https://github.com/user-attachments/assets/1eda55ee-8a0d-4c2a-8afd-af55be5c26eb" />
+</p>
 
 <details>
 <summary><b>🎬 보스 '해치' 패턴 보기 (클릭하여 접기/펼치기)</b></summary>
