@@ -109,7 +109,7 @@
 
 > 💡 **[독립 플러그인 기반 Enemy 시스템 적용]**  
 > Shards Of Veyara 프로젝트에서 개발한 Enemy 플러그인을 본 프로젝트에 이식 및 재사용하였습니다.  
-> 세부적인 몬스터 AI 메커니즘과 행동 패턴은 [해당 노션 페이지](https://app.notion.com/p/3318942a9aa680b7808ac55d9dce4ec4?pvs=21)에서 확인하실 수 있습니다.
+> 세부적인 몬스터 AI 메커니즘과 행동 패턴은 [해당 노션 페이지](https://app.notion.com/p/Shards-of-Veyara-32e8942a9aa681009747ccd658379835?source=copy_link)에서 확인하실 수 있습니다.
 
 - **해치 (보스 몬스터) :** 남산 타워 및 어린이 대공원 맵 보스
 
