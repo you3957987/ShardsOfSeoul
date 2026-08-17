@@ -146,9 +146,17 @@
 
 <div align="center">
 
-| 기본 서울 어린이 대공원 | 카툰풍 서울 어린이 대공원 | 스케치풍 서울 어린이 대공원 |
-| :---: | :---: | :---: |
-| <img width="260" alt="그냥 어린이 대공원" src="https://github.com/user-attachments/assets/08a90b46-a60c-4bc8-9518-7554b79c9031" /> | <img width="260" alt="어린이 대공원 첫 변화" src="https://github.com/user-attachments/assets/7b9c9612-b4c9-4147-a9c8-5089de491dda" /> | <img width="260" alt="어린이 대공원 핸드 드로우" src="https://github.com/user-attachments/assets/053b4a79-a091-4085-b020-0260a169ec33" /> |
+| 기본 서울 어린이 대공원 |
+| :---: |
+| <img width="800" alt="그냥 어린이 대공원" src="https://github.com/user-attachments/assets/08a90b46-a60c-4bc8-9518-7554b79c9031" /> |
+
+| 카툰풍 서울 어린이 대공원 |
+| :---: |
+| <img width="800" alt="어린이 대공원 첫 변화" src="https://github.com/user-attachments/assets/7b9c9612-b4c9-4147-a9c8-5089de491dda" /> |
+
+| 스케치풍 서울 어린이 대공원 |
+| :---: |
+| <img width="800" alt="어린이 대공원 핸드 드로우" src="https://github.com/user-attachments/assets/053b4a79-a091-4085-b020-0260a169ec33" /> |
 
 | 남산 타워 | 회현역 |
 | :---: | :---: |
